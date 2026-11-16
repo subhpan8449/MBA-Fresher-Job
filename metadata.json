@@ -1,0 +1,6 @@
+{
+  "name": "MBA Fresher Blessing AI",
+  "description": "Global AI-Powered MBA Fresher Job Discovery, Verification, and Application Intelligence Platform founded by Subhashish Pandey.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

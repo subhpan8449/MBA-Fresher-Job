@@ -1,0 +1,300 @@
+{
+  "entities": {
+    "UserAccount": {
+      "title": "UserAccount",
+      "description": "Authenticated platform user account and role metadata.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "email": { "type": "string", "format": "email", "maxLength": 180 },
+        "photoURL": { "type": "string", "maxLength": 500 },
+        "role": { "type": "string", "enum": ["candidate", "owner"] },
+        "consentAccepted": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "displayName", "email", "role", "consentAccepted", "createdAt", "updatedAt"]
+    },
+    "CandidateProfile": {
+      "title": "CandidateProfile",
+      "description": "Private MBA fresher candidate profile for AI matching and application assistance.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "email": { "type": "string", "format": "email", "maxLength": 180 },
+        "phone": { "type": "string", "maxLength": 40 },
+        "country": { "type": "string", "maxLength": 80 },
+        "preferredLocations": { "type": "array", "description": "Up to 15 preferred cities or countries." },
+        "mbaSpecialization": { "type": "string", "maxLength": 80 },
+        "college": { "type": "string", "maxLength": 160 },
+        "graduationYear": { "type": "string", "maxLength": 16 },
+        "experienceYears": { "type": "string", "maxLength": 40 },
+        "skills": { "type": "array", "description": "Up to 30 candidate skills." },
+        "certifications": { "type": "array", "description": "Up to 20 certifications." },
+        "resumeSummary": { "type": "string", "maxLength": 12000 },
+        "resumeFileName": { "type": "string", "maxLength": 180 },
+        "preferredSalary": { "type": "string", "maxLength": 80 },
+        "preferredEmploymentType": { "type": "string", "maxLength": 60 },
+        "remotePreference": { "type": "string", "enum": ["Any", "Remote", "Hybrid", "On-site"] },
+        "visaStatus": { "type": "string", "maxLength": 120 },
+        "notifyInApp": { "type": "boolean" },
+        "notifyPush": { "type": "boolean" },
+        "notifyEmail": { "type": "boolean" },
+        "notifyWhatsApp": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "name", "email", "country", "mbaSpecialization", "experienceYears", "remotePreference", "createdAt", "updatedAt"]
+    },
+    "JobListing": {
+      "title": "JobListing",
+      "description": "Verified or AI-discovered MBA fresher job listing with India-first region and strict eligibility.",
+      "type": "object",
+      "properties": {
+        "jobId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 2, "maxLength": 200 },
+        "company": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "region": { "type": "string", "enum": ["India", "International"] },
+        "country": { "type": "string", "maxLength": 100 },
+        "city": { "type": "string", "maxLength": 100 },
+        "workMode": { "type": "string", "enum": ["Remote", "Hybrid", "On-site", "Unspecified"] },
+        "experienceRequired": { "type": "string", "maxLength": 100 },
+        "isFresherFriendly": { "type": "boolean" },
+        "experienceTier": { "type": "string", "enum": ["0 Years / Fresher", "0-1 Years", "MBA Graduate Trainee", "Missing Experience Info", "Exceeds 1 Year (Excluded)"] },
+        "experienceCheck": { "type": "string", "enum": ["Confirmed 0-1 Yr", "Missing Experience Info", "Exceeds 1 Yr"] },
+        "mbaEligible": { "type": "boolean" },
+        "qualificationCheck": { "type": "string", "enum": ["Confirmed MBA Eligible", "Needs MBA Verification", "Not MBA Eligible"] },
+        "feedBucket": { "type": "string", "enum": ["Verified MBA Fresher Jobs", "Partially Verified Jobs", "Needs Eligibility Verification", "Expired or Closed Jobs"] },
+        "educationRequired": { "type": "string", "maxLength": 200 },
+        "category": { "type": "string", "enum": ["Finance Jobs", "SAP FICO Jobs", "Business Analytics Jobs", "Marketing Jobs"] },
+        "mbaSpecialization": { "type": "string", "maxLength": 120 },
+        "skills": { "type": "array", "description": "Up to 25 required skills." },
+        "salary": { "type": "string", "maxLength": 120 },
+        "employmentType": { "type": "string", "maxLength": 80 },
+        "description": { "type": "string", "maxLength": 15000 },
+        "deadline": { "type": "string", "maxLength": 80 },
+        "postedDate": { "type": "string", "maxLength": 80 },
+        "lastVerifiedDate": { "type": "string", "maxLength": 80 },
+        "sourceName": { "type": "string", "maxLength": 120 },
+        "originalJobUrl": { "type": "string", "maxLength": 1000 },
+        "sourceUrls": { "type": "array", "description": "Up to 10 verified source URLs." },
+        "applyUrl": { "type": "string", "maxLength": 1000 },
+        "recruiterInfo": { "type": "string", "maxLength": 300 },
+        "visaSponsorship": { "type": "string", "maxLength": 160 },
+        "extractedClaims": { "type": "string", "maxLength": 1500 },
+        "scamWarning": { "type": "string", "maxLength": 500 },
+        "verificationStatus": { "type": "string", "enum": ["Verified", "Partially Verified", "Unverified", "Expired", "Suspicious"] },
+        "duplicateKey": { "type": "string", "maxLength": 200 },
+        "visibility": { "type": "string", "enum": ["public", "archived"] },
+        "createdBy": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["jobId", "title", "company", "region", "country", "workMode", "experienceRequired", "isFresherFriendly", "experienceCheck", "mbaEligible", "qualificationCheck", "feedBucket", "category", "originalJobUrl", "applyUrl", "verificationStatus", "visibility", "createdBy", "createdAt", "updatedAt"]
+    },
+    "SavedJob": {
+      "title": "SavedJob",
+      "description": "Candidate saved job bookmark.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "jobId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "jobTitle": { "type": "string", "maxLength": 200 },
+        "company": { "type": "string", "maxLength": 160 },
+        "category": { "type": "string", "maxLength": 80 },
+        "applyUrl": { "type": "string", "maxLength": 1000 },
+        "verificationStatus": { "type": "string", "maxLength": 40 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "jobId", "jobTitle", "company", "applyUrl", "createdAt"]
+    },
+    "JobApplication": {
+      "title": "JobApplication",
+      "description": "Candidate application lifecycle tracker with process timeline and interview schedule.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "jobId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "jobTitle": { "type": "string", "maxLength": 200 },
+        "company": { "type": "string", "maxLength": 160 },
+        "category": { "type": "string", "maxLength": 80 },
+        "applyUrl": { "type": "string", "maxLength": 1000 },
+        "status": { "type": "string", "enum": ["Preparing", "Applied", "Assessment", "Interview Scheduled", "Offer", "Closed", "Rejected"] },
+        "notes": { "type": "string", "maxLength": 3000 },
+        "deadline": { "type": "string", "maxLength": 80 },
+        "appliedDate": { "type": "string", "maxLength": 40 },
+        "applicationRefId": { "type": "string", "maxLength": 120 },
+        "nextActionDate": { "type": "string", "maxLength": 40 },
+        "interviewRound": { "type": "string", "maxLength": 120 },
+        "interviewDateTime": { "type": "string", "maxLength": 60 },
+        "interviewMode": { "type": "string", "enum": ["Video Call", "In-Person", "Phone", "Online Assessment", "None"] },
+        "interviewerName": { "type": "string", "maxLength": 120 },
+        "interviewLink": { "type": "string", "maxLength": 500 },
+        "interviewPrepChecklist": { "type": "array", "description": "Up to 10 checklist items." },
+        "processTimeline": { "type": "array", "description": "Up to 15 timeline update entries." },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "jobId", "jobTitle", "company", "applyUrl", "status", "createdAt", "updatedAt"]
+    },
+    "CandidateNotification": {
+      "title": "CandidateNotification",
+      "description": "Personalized job, category, or interview schedule alert for a candidate.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "jobId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "category": { "type": "string", "maxLength": 80 },
+        "title": { "type": "string", "maxLength": 240 },
+        "jobTitle": { "type": "string", "maxLength": 200 },
+        "company": { "type": "string", "maxLength": 160 },
+        "location": { "type": "string", "maxLength": 140 },
+        "experienceRequired": { "type": "string", "maxLength": 100 },
+        "salary": { "type": "string", "maxLength": 100 },
+        "matchScore": { "type": "number" },
+        "verificationStatus": { "type": "string", "maxLength": 40 },
+        "postedDate": { "type": "string", "maxLength": 80 },
+        "applyUrl": { "type": "string", "maxLength": 1000 },
+        "channel": { "type": "string", "enum": ["in_app", "push", "email", "whatsapp"] },
+        "read": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "jobId", "title", "jobTitle", "company", "matchScore", "verificationStatus", "applyUrl", "read", "createdAt", "updatedAt"]
+    },
+    "AiRecommendation": {
+      "title": "AiRecommendation",
+      "description": "Persisted transparent AI candidate-job match analysis and skill gap explanation.",
+      "type": "object",
+      "properties": {
+        "recId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "jobId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "matchScore": { "type": "number" },
+        "reasons": { "type": "array", "description": "Up to 10 transparent match reasons." },
+        "missingRequirements": { "type": "array", "description": "Up to 10 identified missing skills or requirements." },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["recId", "uid", "jobId", "matchScore", "createdAt", "updatedAt"]
+    },
+    "DataSourceConfig": {
+      "title": "DataSourceConfig",
+      "description": "Configured external job board or search integration source.",
+      "type": "object",
+      "properties": {
+        "sourceId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "maxLength": 120 },
+        "sourceType": { "type": "string", "maxLength": 60 },
+        "baseUrl": { "type": "string", "maxLength": 400 },
+        "enabled": { "type": "boolean" },
+        "healthStatus": { "type": "string", "enum": ["Healthy", "Degraded", "Disabled"] },
+        "jobsDiscovered": { "type": "number" },
+        "lastSyncAt": { "type": "string", "maxLength": 80 },
+        "updatedBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["sourceId", "name", "sourceType", "enabled", "healthStatus", "jobsDiscovered", "createdAt", "updatedAt"]
+    },
+    "AiActivityLog": {
+      "title": "AiActivityLog",
+      "description": "Autonomous AI agent activity and audit trail log.",
+      "type": "object",
+      "properties": {
+        "logId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "agentName": { "type": "string", "maxLength": 100 },
+        "action": { "type": "string", "maxLength": 160 },
+        "status": { "type": "string", "enum": ["Completed", "Pending Approval", "Failed", "Skipped"] },
+        "summary": { "type": "string", "maxLength": 1000 },
+        "modelUsed": { "type": "string", "maxLength": 80 },
+        "actorUid": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["logId", "agentName", "action", "status", "summary", "modelUsed", "actorUid", "createdAt"]
+    },
+    "ApprovalRequest": {
+      "title": "ApprovalRequest",
+      "description": "High-risk AI action awaiting explicit owner approval from Subhashish Pandey.",
+      "type": "object",
+      "properties": {
+        "requestId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "actionType": { "type": "string", "maxLength": 100 },
+        "title": { "type": "string", "maxLength": 200 },
+        "description": { "type": "string", "maxLength": 1000 },
+        "requestedByAgent": { "type": "string", "maxLength": 100 },
+        "status": { "type": "string", "enum": ["Pending", "Approved", "Rejected"] },
+        "reviewedBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["requestId", "actionType", "title", "description", "requestedByAgent", "status", "createdAt", "updatedAt"]
+    },
+    "PlatformSetting": {
+      "title": "PlatformSetting",
+      "description": "Global AI governance, monitoring frequency, and notification policy settings.",
+      "type": "object",
+      "properties": {
+        "settingId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "monitoringFrequencyMinutes": { "type": "number" },
+        "dailyAiSpendCapUsd": { "type": "number" },
+        "primaryAiProvider": { "type": "string", "maxLength": 60 },
+        "primaryAiModel": { "type": "string", "maxLength": 80 },
+        "autoVerifyUrls": { "type": "boolean" },
+        "autoArchiveExpired": { "type": "boolean" },
+        "requireOwnerApprovalForOutreach": { "type": "boolean" },
+        "updatedBy": { "type": "string", "maxLength": 128 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["settingId", "monitoringFrequencyMinutes", "dailyAiSpendCapUsd", "primaryAiProvider", "primaryAiModel", "autoVerifyUrls", "autoArchiveExpired", "requireOwnerApprovalForOutreach", "updatedBy", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserAccount" },
+      "description": "User account registration and consent record, accessible only to the owner or platform admin."
+    },
+    "/candidateProfiles/{userId}": {
+      "schema": { "$ref": "#/entities/CandidateProfile" },
+      "description": "Private candidate MBA profile, resume summary, skills, and notification preferences."
+    },
+    "/jobs/{jobId}": {
+      "schema": { "$ref": "#/entities/JobListing" },
+      "description": "Global verified and discovered MBA fresher job listings."
+    },
+    "/savedJobs/{savedId}": {
+      "schema": { "$ref": "#/entities/SavedJob" },
+      "description": "Candidate-owned saved job bookmarks."
+    },
+    "/applications/{applicationId}": {
+      "schema": { "$ref": "#/entities/JobApplication" },
+      "description": "Candidate-owned job application pipeline and interview schedule records."
+    },
+    "/notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/CandidateNotification" },
+      "description": "Personalized job match and deadline alerts for each candidate."
+    },
+    "/aiRecommendations/{recId}": {
+      "schema": { "$ref": "#/entities/AiRecommendation" },
+      "description": "Candidate-specific AI match scores and transparent gap explanations."
+    },
+    "/dataSources/{sourceId}": {
+      "schema": { "$ref": "#/entities/DataSourceConfig" },
+      "description": "Owner-managed external job board and discovery source connectors."
+    },
+    "/aiLogs/{logId}": {
+      "schema": { "$ref": "#/entities/AiActivityLog" },
+      "description": "Autonomous AI agent activity logs for owner audit."
+    },
+    "/approvalRequests/{requestId}": {
+      "schema": { "$ref": "#/entities/ApprovalRequest" },
+      "description": "Owner approval queue for sensitive or high-risk autonomous actions."
+    },
+    "/platformSettings/{settingId}": {
+      "schema": { "$ref": "#/entities/PlatformSetting" },
+      "description": "Owner-controlled global platform and AI model configuration."
+    }
+  }
+}
