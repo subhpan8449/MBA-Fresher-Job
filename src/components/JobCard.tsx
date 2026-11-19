@@ -63,7 +63,7 @@ export function renderVerificationSignal(status: VerificationStatus) {
   }
 }
 
-export const JobCard: React.FC<JobCardProps> = ({
+export const JobCard: React.FC<JobCardProps> = React.memo(({
   job,
   recommendation,
   isSaved,
@@ -77,7 +77,7 @@ export const JobCard: React.FC<JobCardProps> = ({
   const score = recommendation?.matchScore;
 
   return (
-    <article className="flex flex-col justify-between rounded-xl border border-slate-200 bg-white p-5 transition-colors hover:border-blue-300 dark:border-slate-800 dark:bg-slate-900 dark:hover:border-blue-700">
+    <article className="flex flex-col justify-between rounded-xl border border-slate-200 bg-white p-5 transition-[transform,border-color,box-shadow] duration-150 hover:-translate-y-0.5 hover:border-blue-300 hover:shadow-md dark:border-slate-800 dark:bg-slate-900 dark:hover:border-blue-700">
       <div>
         {/* Unboxed top metadata line (Zero-pill discipline) */}
         <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500 dark:text-slate-400">
@@ -259,4 +259,5 @@ export const JobCard: React.FC<JobCardProps> = ({
       </div>
     </article>
   );
-};
+});
+JobCard.displayName = 'JobCard';

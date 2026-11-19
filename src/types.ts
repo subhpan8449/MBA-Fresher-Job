@@ -8,6 +8,43 @@ export type WorkMode = 'Remote' | 'Hybrid' | 'On-site' | 'Unspecified';
 
 export type JobRegion = 'India' | 'International';
 
+export type DiscoveryPortal =
+  | 'LinkedIn'
+  | 'Naukri'
+  | 'Internshala'
+  | 'Foundit'
+  | 'IIMJobs'
+  | 'Indeed'
+  | 'Glassdoor'
+  | 'Hirist'
+  | 'Unstop'
+  | 'Shine'
+  | 'Apna'
+  | 'Wellfound'
+  | 'Cutshort'
+  | 'Instahyre'
+  | 'Freshersworld'
+  | 'Company ATS';
+
+export const DISCOVERY_PORTALS: DiscoveryPortal[] = [
+  'LinkedIn',
+  'Naukri',
+  'Internshala',
+  'Foundit',
+  'IIMJobs',
+  'Indeed',
+  'Glassdoor',
+  'Hirist',
+  'Unstop',
+  'Shine',
+  'Apna',
+  'Wellfound',
+  'Cutshort',
+  'Instahyre',
+  'Freshersworld',
+  'Company ATS',
+];
+
 export type ExperienceTier =
   | '0 Years / Fresher'
   | '0-1 Years'
@@ -314,6 +351,8 @@ export interface PaginatedJobsResponse {
   countsByBucket: Record<FeedBucket, number>;
   countsByRegion: Record<JobRegion, number>;
   countsByCategory: Record<JobCategory, number>;
+  connectedSourcesCount?: number;
+  sourceBreakdown?: Record<string, number>;
   cachedAt: string;
 }
 

@@ -1,5 +1,6 @@
 import React, { Suspense, lazy, useCallback, useEffect, useMemo, useState } from 'react';
 import { onAuthStateChanged, signInWithPopup, signOut, type User } from 'firebase/auth';
+import { AnimatePresence, MotionConfig, motion } from 'motion/react';
 import {
   AlertCircle,
   ChevronLeft,
@@ -13,8 +14,10 @@ import { auth, googleProvider, OWNER_EMAIL } from './firebase';
 import { useDebounce } from './hooks/useDebounce';
 import {
   discoverJobsViaAi,
+  fetchJobsSummary,
   fetchLivePublicJobs,
   matchJobsViaAi,
+  type JobsSummaryResponse,
 } from './services/apiClient';
 import {
   bootstrapOwnerControls,
@@ -43,25 +46,27 @@ import {
   upsertApplication,
   type ApplicationProcessUpdates,
 } from './services/firestoreService';
-import type {
-  AiActivityLog,
-  AiRecommendation,
-  ApplicationStatus,
-  AppPage,
-  ApprovalRequest,
-  CandidateNotification,
-  CandidateProfile,
-  DataSourceConfig,
-  JobApplication,
-  JobCategory,
-  JobListing,
-  PaginatedJobsResponse,
-  PlatformSetting,
-  SavedJob,
+import {
+  DISCOVERY_PORTALS,
+  type AiActivityLog,
+  type AiRecommendation,
+  type ApplicationStatus,
+  type AppPage,
+  type ApprovalRequest,
+  type CandidateNotification,
+  type CandidateProfile,
+  type DataSourceConfig,
+  type DiscoveryPortal,
+  type JobApplication,
+  type JobCategory,
+  type JobListing,
+  type PaginatedJobsResponse,
+  type PlatformSetting,
+  type SavedJob,
 } from './types';
+import { GoogleAuthGate } from './components/GoogleAuthGate';
 import { JobCard } from './components/JobCard';
 import { DEFAULT_FILTERS, JobFilters, type JobFilterState } from './components/JobFilters';
-import { LandingPage } from './components/LandingPage';
 import { OfflineIndicator } from './components/PWAInstallButton';
 import { WorkspaceShell } from './components/WorkspaceShell';
 
@@ -110,7 +115,9 @@ const PageSkeleton = () => (
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState(false);
-  const [currentPage, setCurrentPage] = useState<AppPage>('landing');
+  const [signingIn, setSigningIn] = useState(false);
+  const [authError, setAuthError] = useState('');
+  const [currentPage, setCurrentPage] = useState<AppPage>('dashboard');
   const [isDark, setIsDark] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false;
     return localStorage.getItem('mba_blessing_theme') === 'dark';
@@ -118,7 +125,9 @@ export default function App() {
 
   // Paginated & Live ATS State
   const [liveAtsPageResp, setLiveAtsPageResp] = useState<PaginatedJobsResponse | null>(null);
+  const [summaryResp, setSummaryResp] = useState<JobsSummaryResponse | null>(null);
   const [bootShowcaseJobs, setBootShowcaseJobs] = useState<JobListing[]>([]);
+  const [discoveredSessionJobs, setDiscoveredSessionJobs] = useState<JobListing[]>([]);
   const [firestoreJobs, setFirestoreJobs] = useState<JobListing[]>([]);
   const [loadingLiveJobs, setLoadingLiveJobs] = useState(true);
   const [liveJobsError, setLiveJobsError] = useState('');
@@ -147,9 +156,20 @@ export default function App() {
   const [detailTab, setDetailTab] = useState<'details' | 'assistant'>('details');
   const [discoveryCountry, setDiscoveryCountry] = useState('India');
   const [discoveryRole, setDiscoveryRole] = useState('');
+  const [selectedPortals, setSelectedPortals] = useState<DiscoveryPortal[]>([...DISCOVERY_PORTALS]);
   const [toastMsg, setToastMsg] = useState('');
   const [ocrOpen, setOcrOpen] = useState(false);
   const [privacyOpen, setPrivacyOpen] = useState(false);
+
+  const toggleDiscoveryPortal = (portal: DiscoveryPortal) => {
+    setSelectedPortals((prev) =>
+      prev.includes(portal)
+        ? prev.length > 1
+          ? prev.filter((p) => p !== portal)
+          : prev
+        : [...prev, portal]
+    );
+  };
 
   const isOwner = Boolean(user?.email === OWNER_EMAIL && user?.emailVerified);
 
@@ -170,12 +190,16 @@ export default function App() {
     }
   }, [isDark]);
 
-  // Initial India-first showcase fetch on Boot
+  // Initial India-first showcase + platform summary fetch once authenticated
   useEffect(() => {
-    fetchLivePublicJobs({ page: 1, limit: 12 })
+    if (!user) return;
+    fetchLivePublicJobs({ page: 1, limit: 30 })
       .then((res) => setBootShowcaseJobs(res.jobs || []))
       .catch(() => {});
-  }, []);
+    fetchJobsSummary()
+      .then((sum) => setSummaryResp(sum))
+      .catch(() => {});
+  }, [user]);
 
   // Reset pagination when global feed filters change
   useEffect(() => {
@@ -227,16 +251,18 @@ export default function App() {
   );
 
   useEffect(() => {
+    if (!user) return;
     void loadPaginatedJobs(false);
-  }, [loadPaginatedJobs]);
+  }, [user, loadPaginatedJobs]);
 
-  // Subscribe to Public Firestore Jobs (bounded)
+  // Subscribe to Public Firestore Jobs (bounded) once signed in
   useEffect(() => {
+    if (!user) return;
     const unsub = subscribePublicJobs((items) => {
       setFirestoreJobs(items);
     });
     return () => unsub();
-  }, []);
+  }, [user]);
 
   // Firebase Auth Lifecycle
   useEffect(() => {
@@ -312,6 +338,9 @@ export default function App() {
     for (const j of bootShowcaseJobs) {
       map.set(j.duplicateKey || j.jobId, j);
     }
+    for (const j of discoveredSessionJobs) {
+      map.set(j.duplicateKey || j.jobId, j);
+    }
     for (const j of firestoreJobs) {
       map.set(j.duplicateKey || j.jobId, j);
     }
@@ -324,21 +353,21 @@ export default function App() {
       return (b.postedDate || '').localeCompare(a.postedDate || '');
     });
     return list;
-  }, [liveAtsPageResp, bootShowcaseJobs, firestoreJobs]);
+  }, [liveAtsPageResp, bootShowcaseJobs, discoveredSessionJobs, firestoreJobs]);
 
   const recMap = useMemo(
     () => new Map(recommendations.map((r) => [r.jobId, r])),
     [recommendations]
   );
 
-  // Merge current server-paginated page + matching Firestore jobs for page 1
+  // Merge current server-paginated page + matching session/Firestore jobs for page 1
   const currentFeedJobs = useMemo(() => {
     const map = new Map<string, JobListing>();
     for (const j of liveAtsPageResp?.jobs || []) {
       map.set(j.duplicateKey || j.jobId, j);
     }
     if (jobsPage === 1) {
-      for (const j of firestoreJobs) {
+      for (const j of [...discoveredSessionJobs, ...firestoreJobs]) {
         if (j.experienceCheck === 'Exceeds 1 Yr') continue;
         if (filters.category !== 'All' && j.category !== filters.category) continue;
         if (filters.region !== 'All' && j.region !== filters.region) continue;
@@ -386,25 +415,33 @@ export default function App() {
       }
       return true;
     });
-  }, [liveAtsPageResp, firestoreJobs, jobsPage, filters, recMap]);
+  }, [liveAtsPageResp, discoveredSessionJobs, firestoreJobs, jobsPage, filters, recMap]);
 
   const handleSignIn = async () => {
+    setSigningIn(true);
+    setAuthError('');
     try {
       const cred = await signInWithPopup(auth, googleProvider);
       if (cred.user) {
-        showToast(`Signed in as ${cred.user.displayName || cred.user.email}`);
-        if (currentPage === 'landing' || currentPage === 'login' || currentPage === 'register') {
-          setCurrentPage(cred.user.email === OWNER_EMAIL ? 'owner' : 'dashboard');
-        }
+        showToast(`Welcome, ${cred.user.displayName || cred.user.email}`);
+        setCurrentPage('dashboard');
       }
     } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Google sign-in was cancelled.');
+      const msg =
+        err instanceof Error
+          ? err.message
+          : 'Google sign-in popup was closed. Please allow popups and try again.';
+      setAuthError(msg);
+      showToast(msg);
+    } finally {
+      setSigningIn(false);
     }
   };
 
   const handleSignOut = async () => {
     await signOut(auth);
-    setCurrentPage('landing');
+    setCurrentPage('dashboard');
+    setDiscoveredSessionJobs([]);
     showToast('Signed out.');
   };
 
@@ -449,35 +486,75 @@ export default function App() {
     }
   };
 
-  const handleAiDiscovery = async () => {
+  const handleAiDiscovery = async (overrideParams?: {
+    category?: JobCategory | 'All';
+    country?: string;
+    city?: string;
+    roleQuery?: string;
+    portals?: DiscoveryPortal[];
+  }) => {
     if (!user) {
       await handleSignIn();
       return;
     }
     setDiscoveringAi(true);
     try {
+      const targetPortals = overrideParams?.portals || selectedPortals;
+      const targetCategory = overrideParams?.category ?? filters.category;
+      const targetCountry = overrideParams?.country ?? discoveryCountry;
       const res = await discoverJobsViaAi({
-        category: filters.category,
-        country: discoveryCountry,
-        city: filters.city,
-        roleQuery: discoveryRole || debouncedSearch,
+        category: targetCategory,
+        country: targetCountry,
+        city: overrideParams?.city ?? filters.city,
+        roleQuery: overrideParams?.roleQuery ?? (discoveryRole || debouncedSearch),
+        portals: targetPortals,
       });
+
+      if (res.jobs.length > 0) {
+        setDiscoveredSessionJobs((prev) => {
+          const map = new Map<string, JobListing>();
+          for (const j of [...res.jobs, ...prev]) {
+            map.set(j.duplicateKey || j.jobId, j);
+          }
+          return Array.from(map.values());
+        });
+      }
 
       const savedCount = await saveDiscoveredJobsToFirestore(res.jobs, user.uid, isOwner);
       await logAiActivity({
         agentName: 'Job Discovery Agent',
-        action: `Discovered ${filters.category} jobs in ${discoveryCountry}`,
+        action: `Discovered ${targetCategory} jobs in ${targetCountry} (${targetPortals.length} apps)`,
         status: 'Completed',
-        summary: `Added/updated ${savedCount} real listings via Search Grounding and ATS feeds.`,
+        summary: `Found ${res.jobs.length} real listings (${savedCount} newly synced to Firestore).`,
         modelUsed: 'gemini-4-hydrogen',
         actorUid: user.uid,
-      });
-      showToast(`Discovered ${res.jobs.length} live opportunities (${savedCount} synced to Firestore).`);
+      }).catch(() => {});
+
+      // Refresh server summary counters
+      fetchJobsSummary()
+        .then((sum) => setSummaryResp(sum))
+        .catch(() => {});
+
+      showToast(
+        res.warning
+          ? `Found ${res.jobs.length} live opportunities (${savedCount} new synced). ${res.warning}`
+          : `Found ${res.jobs.length} live opportunities across ${targetPortals.length} apps + ATS (${savedCount} new synced).`
+      );
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Discovery failed');
     } finally {
       setDiscoveringAi(false);
     }
+  };
+
+  const handleDiscoverEverywhere = async () => {
+    await handleAiDiscovery({
+      category: 'All',
+      country: 'India',
+      city: 'All India',
+      roleQuery: 'MBA fresher Financial Analyst FP&A SAP FICO Business Analyst Marketing India',
+      portals: [...DISCOVERY_PORTALS],
+    });
   };
 
   const handleRunMatching = async () => {
@@ -487,9 +564,17 @@ export default function App() {
     }
     setMatchingLoading(true);
     try {
-      const targets = mergedOverviewJobs
-        .filter((j) => j.mbaEligible && j.experienceCheck !== 'Exceeds 1 Yr')
-        .slice(0, 18);
+      const verifiedTargets = mergedOverviewJobs.filter(
+        (j) => j.mbaEligible && j.experienceCheck !== 'Exceeds 1 Yr' && j.verificationStatus !== 'Expired'
+      );
+      const broaderTargets = mergedOverviewJobs.filter(
+        (j) => j.experienceCheck !== 'Exceeds 1 Yr' && j.verificationStatus !== 'Expired'
+      );
+      const targets = (verifiedTargets.length >= 6 ? verifiedTargets : broaderTargets).slice(0, 18);
+      if (targets.length === 0) {
+        showToast('No active jobs loaded yet. Click "Find Jobs Everywhere (16+ Apps)" first.');
+        return;
+      }
       const res = await matchJobsViaAi(profile, targets);
       await saveAiRecommendations(user.uid, res.matches);
 
@@ -552,49 +637,30 @@ export default function App() {
     createdBy: user?.uid || 'system',
   });
 
-  // Dedicated Auth View when visiting login/register explicitly
-  if (currentPage === 'login' || currentPage === 'register') {
+  // Smooth Session Boot Screen while checking Firebase Auth state
+  if (!authReady) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-slate-50 p-6 dark:bg-[#070E1A]">
-        <div className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-8 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-          <h1 className="font-display text-2xl font-bold text-slate-900 dark:text-white">
-            {currentPage === 'register' ? 'Candidate Registration' : 'Sign in to MBA Fresher Blessing AI'}
-          </h1>
-          <p className="mt-2 text-sm text-slate-600 dark:text-slate-400">
-            Authenticate securely with your Google account to sync your MBA profile, resume insights, saved jobs, and interview schedule.
-          </p>
-          <button
-            type="button"
-            onClick={() => void handleSignIn()}
-            className="mt-6 w-full rounded-lg bg-[#0B192C] py-3 text-sm font-medium text-white hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-700"
-          >
-            Continue with Google
-          </button>
-          <button
-            type="button"
-            onClick={() => setCurrentPage('landing')}
-            className="mt-3 w-full rounded-lg border border-slate-200 py-2.5 text-xs font-medium text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300"
-          >
-            Return to Home
-          </button>
+      <div className="flex min-h-screen flex-col items-center justify-center bg-[#06101F] px-6 text-white">
+        <div className="flex items-center gap-3">
+          <Loader2 className="h-5 w-5 animate-spin text-sky-400" />
+          <span className="font-display text-sm font-semibold tracking-wide">
+            Initializing MBA Fresher Blessing AI...
+          </span>
         </div>
       </div>
     );
   }
 
-  // Landing Page View
-  if (currentPage === 'landing') {
+  // COMPULSORY GOOGLE LOGIN GATE — Unauthenticated users must sign in with Google before accessing workspace
+  if (!user) {
     return (
-      <>
-        <LandingPage
-          liveJobs={mergedOverviewJobs}
-          loadingJobs={loadingLiveJobs && mergedOverviewJobs.length === 0}
-          isSignedIn={Boolean(user)}
+      <MotionConfig reducedMotion="user">
+        <GoogleAuthGate
           isDark={isDark}
+          signingIn={signingIn}
+          authError={authError}
           onToggleTheme={() => setIsDark((d) => !d)}
-          onSignIn={() => void handleSignIn()}
-          onNavigate={handleNavigate}
-          onSelectJob={(j) => handleSelectJob(j, 'details')}
+          onSignIn={handleSignIn}
           onOpenPrivacy={() => setPrivacyOpen(true)}
         />
         <Suspense fallback={null}>
@@ -602,20 +668,12 @@ export default function App() {
             <PrivacyModal
               isOpen={privacyOpen}
               onClose={() => setPrivacyOpen(false)}
-              isSignedIn={Boolean(user)}
-              onDeleteAccountData={
-                user
-                  ? async () => {
-                      await deleteAllCandidateData(user.uid);
-                      await handleSignOut();
-                    }
-                  : undefined
-              }
+              isSignedIn={false}
             />
           )}
         </Suspense>
         <OfflineIndicator />
-      </>
+      </MotionConfig>
     );
   }
 
@@ -634,25 +692,24 @@ export default function App() {
             ? 'Marketing Jobs'
             : null;
 
+  const effectivePage: AppPage =
+    currentPage === 'landing' || currentPage === 'login' || currentPage === 'register'
+      ? 'dashboard'
+      : currentPage;
+
   return (
-    <>
+    <MotionConfig reducedMotion="user">
       <WorkspaceShell
-        currentPage={currentPage}
-        userEmail={user?.email || ''}
-        userName={user?.displayName || 'Guest'}
+        currentPage={effectivePage}
+        userEmail={user.email || ''}
+        userName={user.displayName || 'MBA Candidate'}
         isOwner={isOwner}
-        isSignedIn={Boolean(user)}
+        isSignedIn={true}
         isDark={isDark}
         unreadNotifications={unreadNotifs}
         onToggleTheme={() => setIsDark((d) => !d)}
         onNavigate={(p) => handleNavigate(p)}
-        onOpenOcr={() => {
-          if (!user) {
-            void handleSignIn();
-          } else {
-            setOcrOpen(true);
-          }
-        }}
+        onOpenOcr={() => setOcrOpen(true)}
         onSignIn={() => void handleSignIn()}
         onSignOut={() => void handleSignOut()}
       >
@@ -666,22 +723,46 @@ export default function App() {
         )}
 
         <Suspense fallback={<PageSkeleton />}>
-          {currentPage === 'dashboard' && (
-            <CandidateDashboard
-              profile={profile}
-              jobs={mergedOverviewJobs}
-              recommendations={recommendations}
-              savedJobs={savedJobs}
-              applications={applications}
-              notifications={notifications}
-              matchingLoading={matchingLoading}
-              onRunMatching={handleRunMatching}
-              onNavigate={(p) => handleNavigate(p)}
-              onSelectJob={handleSelectJob}
-              onToggleSave={(j) => void handleToggleSave(j)}
-              onApplyClick={(j) => void handleApplyClick(j)}
-            />
-          )}
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={effectivePage}
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -4 }}
+              transition={{ duration: 0.16, ease: 'easeOut' }}
+            >
+              {effectivePage === 'dashboard' && (
+                <CandidateDashboard
+                  profile={profile}
+                  jobs={mergedOverviewJobs}
+                  totalLiveJobsCount={summaryResp?.total ?? liveAtsPageResp?.total ?? mergedOverviewJobs.length}
+                  connectedSourcesCount={
+                    summaryResp?.connectedSourcesCount ??
+                    liveAtsPageResp?.connectedSourcesCount ??
+                    DISCOVERY_PORTALS.length + 7
+                  }
+                  sourceBreakdown={
+                    summaryResp?.sourceBreakdown ?? liveAtsPageResp?.sourceBreakdown ?? {}
+                  }
+                  countsByRegion={summaryResp?.countsByRegion ?? liveAtsPageResp?.countsByRegion}
+                  countsByCategory={
+                    summaryResp?.countsByCategory ?? liveAtsPageResp?.countsByCategory
+                  }
+                  recommendations={recommendations}
+                  savedJobs={savedJobs}
+                  applications={applications}
+                  notifications={notifications}
+                  matchingLoading={matchingLoading}
+                  discoveringEverywhere={discoveringAi}
+                  onRunMatching={handleRunMatching}
+                  onDiscoverEverywhere={handleDiscoverEverywhere}
+                  onOpenOcr={() => setOcrOpen(true)}
+                  onNavigate={(p) => handleNavigate(p)}
+                  onSelectJob={handleSelectJob}
+                  onToggleSave={(j) => void handleToggleSave(j)}
+                  onApplyClick={(j) => void handleApplyClick(j)}
+                />
+              )}
 
           {activeCategoryHub && (
             <CategoryHubView
@@ -765,7 +846,7 @@ export default function App() {
                     className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-medium text-slate-800 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
                   >
                     <ImageUp className="h-3.5 w-3.5" />
-                    <span>OCR Screenshot</span>
+                    <span>Ingest: Screenshot / Post / Mail</span>
                   </button>
                   <button
                     type="button"
@@ -778,35 +859,95 @@ export default function App() {
                 </div>
               </div>
 
-              {/* AI Live Search Grounding Discovery Bar */}
-              <div className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-white p-4 sm:flex-row sm:items-center dark:border-slate-800 dark:bg-slate-900">
-                <input
-                  type="text"
-                  value={discoveryRole}
-                  onChange={(e) => setDiscoveryRole(e.target.value)}
-                  placeholder="Role focus (e.g., FP&A Analyst, Credit Analyst, SAP FICO Trainee)..."
-                  className="flex-1 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-900 dark:border-slate-700 dark:bg-slate-950 dark:text-white"
-                />
-                <input
-                  type="text"
-                  value={discoveryCountry}
-                  onChange={(e) => setDiscoveryCountry(e.target.value)}
-                  placeholder="Country (Default: India)..."
-                  className="sm:w-52 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-900 dark:border-slate-700 dark:bg-slate-950 dark:text-white"
-                />
-                <button
-                  type="button"
-                  disabled={discoveringAi}
-                  onClick={() => void handleAiDiscovery()}
-                  className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-blue-700 px-4 py-2 text-xs font-medium text-white hover:bg-blue-800 disabled:opacity-50 whitespace-nowrap shrink-0"
-                >
-                  {discoveringAi ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <Sparkles className="h-3.5 w-3.5" />
-                  )}
-                  <span>{discoveringAi ? 'Searching Live Web...' : 'Discover Live Jobs with AI'}</span>
-                </button>
+              {/* AI Multi-Portal Search Grounding Discovery Bar */}
+              <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="mr-1 text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                    Search Portals ({selectedPortals.length}/{DISCOVERY_PORTALS.length}):
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedPortals([...DISCOVERY_PORTALS])}
+                    className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                  >
+                    All 16 Apps
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setSelectedPortals([
+                        'LinkedIn',
+                        'Naukri',
+                        'Internshala',
+                        'Foundit',
+                        'IIMJobs',
+                        'Unstop',
+                        'Shine',
+                        'Apna',
+                        'Freshersworld',
+                      ])
+                    }
+                    className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                  >
+                    Top Indian Apps
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setSelectedPortals(['Wellfound', 'Cutshort', 'Instahyre', 'Hirist', 'Company ATS'])
+                    }
+                    className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                  >
+                    Startups &amp; ATS
+                  </button>
+                  {DISCOVERY_PORTALS.map((portal) => {
+                    const active = selectedPortals.includes(portal);
+                    return (
+                      <button
+                        key={portal}
+                        type="button"
+                        onClick={() => toggleDiscoveryPortal(portal)}
+                        className={`rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                          active
+                            ? 'bg-blue-700 text-white'
+                            : 'border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300'
+                        }`}
+                      >
+                        {portal}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                  <input
+                    type="text"
+                    value={discoveryRole}
+                    onChange={(e) => setDiscoveryRole(e.target.value)}
+                    placeholder="Role focus (e.g., FP&A Analyst, Credit Analyst, SAP FICO Trainee)..."
+                    className="flex-1 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-900 dark:border-slate-700 dark:bg-slate-950 dark:text-white"
+                  />
+                  <input
+                    type="text"
+                    value={discoveryCountry}
+                    onChange={(e) => setDiscoveryCountry(e.target.value)}
+                    placeholder="Country (Default: India)..."
+                    className="sm:w-52 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-900 dark:border-slate-700 dark:bg-slate-950 dark:text-white"
+                  />
+                  <button
+                    type="button"
+                    disabled={discoveringAi}
+                    onClick={() => void handleAiDiscovery()}
+                    className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-blue-700 px-4 py-2 text-xs font-medium text-white hover:bg-blue-800 disabled:opacity-50 whitespace-nowrap shrink-0"
+                  >
+                    {discoveringAi ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Sparkles className="h-3.5 w-3.5" />
+                    )}
+                    <span>{discoveringAi ? 'Searching Live Portals...' : 'Discover Live Jobs with AI'}</span>
+                  </button>
+                </div>
               </div>
 
               <JobFilters
@@ -1113,6 +1254,8 @@ export default function App() {
               </section>
             </div>
           )}
+            </motion.div>
+          </AnimatePresence>
         </Suspense>
       </WorkspaceShell>
 
@@ -1123,6 +1266,7 @@ export default function App() {
             onClose={() => setOcrOpen(false)}
             onJobExtracted={async (job, notes) => {
               if (!user) return;
+              setDiscoveredSessionJobs((prev) => [job, ...prev]);
               await saveDiscoveredJobsToFirestore([job], user.uid, isOwner);
               await logAiActivity({
                 agentName: 'Job Verification Agent',
@@ -1131,8 +1275,22 @@ export default function App() {
                 summary: `${job.title} at ${job.company}. ${notes}`,
                 modelUsed: 'gemini-4-hydrogen',
                 actorUid: user.uid,
-              });
+              }).catch(() => {});
               showToast(`Extracted and saved "${job.title}" (${job.verificationStatus}).`);
+            }}
+            onJobsExtracted={async (jobs, summary, sourceLabel) => {
+              if (!user || jobs.length === 0) return;
+              setDiscoveredSessionJobs((prev) => [...jobs, ...prev]);
+              const saved = await saveDiscoveredJobsToFirestore(jobs, user.uid, isOwner);
+              await logAiActivity({
+                agentName: 'Job Verification Agent',
+                action: `Ingested ${sourceLabel}`,
+                status: 'Completed',
+                summary: `Saved ${saved} job(s). ${summary}`.slice(0, 950),
+                modelUsed: 'gemini-4-hydrogen',
+                actorUid: user.uid,
+              }).catch(() => {});
+              showToast(`Extracted and saved ${jobs.length} real job(s) from ${sourceLabel}.`);
             }}
           />
         )}
@@ -1156,6 +1314,6 @@ export default function App() {
       </Suspense>
 
       <OfflineIndicator />
-    </>
+    </MotionConfig>
   );
 }

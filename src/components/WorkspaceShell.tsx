@@ -61,19 +61,19 @@ export const WorkspaceShell: React.FC<WorkspaceShellProps> = ({
     items: Array<{ id: AppPage; label: string; icon: React.ReactNode; badge?: number }>;
   }> = [
     {
-      heading: 'Primary Job Categories',
+      heading: 'Command Center',
+      items: [
+        { id: 'dashboard', label: 'Executive Dashboard', icon: <LayoutDashboard className="h-4 w-4" /> },
+        { id: 'jobs', label: 'All India & Global Feed', icon: <Briefcase className="h-4 w-4" /> },
+      ],
+    },
+    {
+      heading: '4 Primary MBA Hubs',
       items: [
         { id: 'finance', label: 'Finance Jobs (Priority)', icon: <TrendingUp className="h-4 w-4" /> },
         { id: 'sap-fico', label: 'SAP FICO Jobs', icon: <Database className="h-4 w-4" /> },
         { id: 'analytics', label: 'Business Analytics Jobs', icon: <BarChart3 className="h-4 w-4" /> },
         { id: 'marketing', label: 'Marketing Jobs', icon: <Megaphone className="h-4 w-4" /> },
-      ],
-    },
-    {
-      heading: 'Discovery & Overview',
-      items: [
-        { id: 'dashboard', label: 'Candidate Dashboard', icon: <LayoutDashboard className="h-4 w-4" /> },
-        { id: 'jobs', label: 'All India & Global Feed', icon: <Briefcase className="h-4 w-4" /> },
       ],
     },
     {
@@ -111,7 +111,7 @@ export const WorkspaceShell: React.FC<WorkspaceShellProps> = ({
         <div className="flex items-center justify-between px-2">
           <button
             type="button"
-            onClick={() => onNavigate('landing')}
+            onClick={() => onNavigate('dashboard')}
             className="text-left font-display text-base font-bold tracking-tight text-white"
           >
             MBA Fresher Blessing AI
@@ -172,7 +172,7 @@ export const WorkspaceShell: React.FC<WorkspaceShellProps> = ({
           className="flex w-full items-center justify-center gap-2 rounded-lg border border-blue-400/40 bg-blue-950/50 px-3 py-2 text-xs font-medium text-blue-100 hover:bg-blue-900/60"
         >
           <ImageUp className="h-3.5 w-3.5" />
-          <span>Upload Job Screenshot</span>
+          <span>Ingest: Screenshot / Post / Mail</span>
         </button>
 
         <div className="flex items-center justify-between px-1 text-xs">
@@ -248,10 +248,23 @@ export const WorkspaceShell: React.FC<WorkspaceShellProps> = ({
 
           <div className="flex items-center gap-3 shrink-0">
             <PWAInstallButton compact />
+            <button
+              type="button"
+              onClick={onToggleTheme}
+              aria-label="Toggle dark mode"
+              className="rounded-lg border border-slate-200 p-1.5 text-slate-600 transition-colors hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+            >
+              {isDark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+            </button>
             {isSignedIn ? (
-              <span className="hidden sm:inline text-xs font-medium text-slate-700 dark:text-slate-300">
-                {userName} {isOwner ? '(Owner)' : ''}
-              </span>
+              <div className="flex items-center gap-2">
+                <span className="flex h-7 w-7 items-center justify-center rounded-full bg-[#0B192C] font-display text-xs font-bold text-white dark:bg-blue-600">
+                  {(userName || 'M').trim().charAt(0).toUpperCase()}
+                </span>
+                <span className="hidden sm:inline text-xs font-medium text-slate-700 dark:text-slate-300">
+                  {userName} {isOwner ? '(Owner)' : ''}
+                </span>
+              </div>
             ) : (
               <button
                 type="button"

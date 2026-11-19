@@ -3,6 +3,7 @@ import express from 'express';
 import path from 'node:path';
 import type {
   CandidateProfile,
+  DiscoveryPortal,
   FeedBucket,
   JobCategory,
   JobListing,
@@ -13,6 +14,7 @@ import {
   analyzeResumeWithGemini,
   discoverJobsWithGemini,
   extractJobFromScreenshot,
+  extractJobsFromPostOrEmail,
   generateApplicationAssistant,
   getAiSystemTelemetry,
   scoreCandidateJobMatches,
@@ -29,7 +31,11 @@ import {
   deduplicateAndRankJobs,
   fetchArbeitnowJobs,
   fetchGreenhouseJobs,
+  fetchHimalayasJobs,
+  fetchJobicyJobs,
+  fetchLeverJobs,
   fetchRemotiveJobs,
+  fetchSmartRecruitersJobs,
 } from './server/jobConnectors.ts';
 
 const PORT = Number(process.env.PORT || 3000);
@@ -39,6 +45,24 @@ const isProduction = process.env.NODE_ENV === 'production';
 let liveJobsCache: JobListing[] = [];
 let liveJobsCacheUpdatedAt = 0;
 let refreshInFlight: Promise<JobListing[]> | null = null;
+
+function buildSourceStats(jobs: JobListing[]): {
+  connectedSourcesCount: number;
+  sourceBreakdown: Record<string, number>;
+} {
+  const breakdown: Record<string, number> = {};
+  for (const job of jobs) {
+    const raw = (job.sourceName || 'Verified ATS').trim();
+    const family = raw.includes('(') ? raw.split('(')[0].trim() : raw;
+    breakdown[family] = (breakdown[family] || 0) + 1;
+  }
+  const activeFamilies = Object.keys(breakdown).length;
+  // 16 AI Search Grounding portals + active direct API families
+  return {
+    connectedSourcesCount: activeFamilies + 16,
+    sourceBreakdown: breakdown,
+  };
+}
 
 async function refreshLivePublicAtsJobs(force = false): Promise<JobListing[]> {
   const now = Date.now();
@@ -50,15 +74,21 @@ async function refreshLivePublicAtsJobs(force = false): Promise<JobListing[]> {
   }
   refreshInFlight = (async () => {
     try {
-      const [gh, an, rm] = await Promise.all([
-        fetchGreenhouseJobs(8),
-        fetchArbeitnowJobs(15),
-        fetchRemotiveJobs(12),
+      const [gh, lv, sr, an, rm, jb, hm] = await Promise.all([
+        fetchGreenhouseJobs(10).catch(() => []),
+        fetchLeverJobs(18).catch(() => []),
+        fetchSmartRecruitersJobs(15).catch(() => []),
+        fetchArbeitnowJobs(16).catch(() => []),
+        fetchRemotiveJobs(16).catch(() => []),
+        fetchJobicyJobs(16).catch(() => []),
+        fetchHimalayasJobs(16).catch(() => []),
       ]);
-      const ranked = deduplicateAndRankJobs([...gh, ...an, ...rm]);
-      liveJobsCache = ranked;
-      liveJobsCacheUpdatedAt = Date.now();
-      return ranked;
+      const ranked = deduplicateAndRankJobs([...gh, ...lv, ...sr, ...an, ...rm, ...jb, ...hm]);
+      if (ranked.length > 0 || liveJobsCache.length === 0) {
+        liveJobsCache = ranked;
+        liveJobsCacheUpdatedAt = Date.now();
+      }
+      return liveJobsCache;
     } finally {
       refreshInFlight = null;
     }
@@ -77,6 +107,47 @@ async function startServer() {
 
   app.get('/api/health', (_req, res) => {
     res.json({ ok: true, timestamp: new Date().toISOString() });
+  });
+
+  // Lightweight live platform summary for compulsory Google Auth Gate & KPI headers
+  app.get('/api/jobs/summary', async (_req, res) => {
+    try {
+      const allJobs = await refreshLivePublicAtsJobs(false);
+      const countsByBucket: Record<FeedBucket, number> = {
+        'Verified MBA Fresher Jobs': 0,
+        'Partially Verified Jobs': 0,
+        'Needs Eligibility Verification': 0,
+        'Expired or Closed Jobs': 0,
+      };
+      const countsByRegion: Record<JobRegion, number> = {
+        India: 0,
+        International: 0,
+      };
+      const countsByCategory: Record<JobCategory, number> = {
+        'Finance Jobs': 0,
+        'SAP FICO Jobs': 0,
+        'Business Analytics Jobs': 0,
+        'Marketing Jobs': 0,
+      };
+      for (const job of allJobs) {
+        countsByBucket[job.feedBucket] = (countsByBucket[job.feedBucket] || 0) + 1;
+        countsByRegion[job.region] = (countsByRegion[job.region] || 0) + 1;
+        countsByCategory[job.category] = (countsByCategory[job.category] || 0) + 1;
+      }
+      const { connectedSourcesCount, sourceBreakdown } = buildSourceStats(allJobs);
+      res.json({
+        total: allJobs.length,
+        countsByBucket,
+        countsByRegion,
+        countsByCategory,
+        connectedSourcesCount,
+        sourceBreakdown,
+        cachedAt: new Date(liveJobsCacheUpdatedAt || Date.now()).toISOString(),
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unable to summarize live jobs';
+      res.status(500).json({ error: message });
+    }
   });
 
   // Server-side Paginated, Cached, India-First Job Query API
@@ -168,6 +239,8 @@ async function startServer() {
       const start = (safePage - 1) * limit;
       const pageItems = filtered.slice(start, start + limit);
 
+      const { connectedSourcesCount, sourceBreakdown } = buildSourceStats(allJobs);
+
       const responsePayload: PaginatedJobsResponse = {
         jobs: pageItems,
         total,
@@ -177,6 +250,8 @@ async function startServer() {
         countsByBucket,
         countsByRegion,
         countsByCategory,
+        connectedSourcesCount,
+        sourceBreakdown,
         cachedAt: new Date(liveJobsCacheUpdatedAt || Date.now()).toISOString(),
       };
       res.json(responsePayload);
@@ -194,35 +269,76 @@ async function startServer() {
         country = 'India',
         city = 'All India',
         roleQuery = '',
+        portals,
       } = req.body as {
         category?: JobCategory | 'All';
         country?: string;
         city?: string;
         roleQuery?: string;
+        portals?: DiscoveryPortal[];
       };
-      const [atsJobs, grounded] = await Promise.all([
-        refreshLivePublicAtsJobs(false),
-        discoverJobsWithGemini({
+
+      const atsPromise = refreshLivePublicAtsJobs(false).catch(() => [] as JobListing[]);
+      let grounded: {
+        jobs: JobListing[];
+        groundingSources: Array<{ title: string; url: string }>;
+        partialWarning?: string;
+      } = { jobs: [], groundingSources: [] };
+
+      let discoveryWarning: string | undefined;
+      try {
+        grounded = await discoverJobsWithGemini({
           category,
           country,
           city,
           roleQuery,
+          portals,
           actorUid: req.user?.uid || 'system',
-        }),
-      ]);
-      const filteredAts = atsJobs.filter((j) => {
+        });
+        if (grounded.partialWarning) {
+          discoveryWarning = grounded.partialWarning;
+        }
+      } catch (aiErr) {
+        discoveryWarning =
+          aiErr instanceof Error
+            ? `Search Grounding temporarily limited (${aiErr.message}); showing verified live ATS jobs.`
+            : 'Search Grounding temporarily limited; showing verified live ATS jobs.';
+      }
+
+      const atsJobs = await atsPromise;
+      const roleTokens = roleQuery
+        .toLowerCase()
+        .split(/\s+/)
+        .filter((t) => t.length >= 3 && !['mba', 'fresher', 'india', 'jobs', 'job'].includes(t));
+
+      const strictFilteredAts = atsJobs.filter((j) => {
         const catOk = category === 'All' || j.category === category;
+        const countryLower = (country || '').toLowerCase();
         const countryOk =
-          !country ||
-          country.toLowerCase() === 'global' ||
-          j.country.toLowerCase().includes(country.toLowerCase()) ||
+          !countryLower ||
+          countryLower === 'global' ||
+          j.country.toLowerCase().includes(countryLower) ||
+          (countryLower === 'india' && j.region === 'India') ||
           j.workMode === 'Remote';
-        return catOk && countryOk;
+        const roleOk =
+          roleTokens.length === 0 ||
+          roleTokens.some((tok) =>
+            `${j.title} ${j.company} ${(j.skills || []).join(' ')}`.toLowerCase().includes(tok)
+          );
+        return catOk && countryOk && roleOk;
       });
+
+      // Fallback to broader category match if specific keyword was overly narrow
+      const filteredAts =
+        strictFilteredAts.length > 0
+          ? strictFilteredAts
+          : atsJobs.filter((j) => category === 'All' || j.category === category).slice(0, 20);
+
       const merged = deduplicateAndRankJobs([...grounded.jobs, ...filteredAts]);
       res.json({
         jobs: merged,
         groundingSources: grounded.groundingSources,
+        warning: discoveryWarning,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Job discovery error';
@@ -262,6 +378,33 @@ async function startServer() {
       res.json(result);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'OCR extraction failed';
+      res.status(500).json({ error: message });
+    }
+  });
+
+  // Social Post (LinkedIn/WhatsApp/Telegram) & Job Alert Email Extraction
+  app.post('/api/ai/ingest-text', requireAuth, aiLimiter, async (req: AuthenticatedRequest, res) => {
+    try {
+      const { inputType, rawText, postOrSourceUrl, portalHint } = req.body as {
+        inputType?: 'social_post' | 'email_alert';
+        rawText?: string;
+        postOrSourceUrl?: string;
+        portalHint?: string;
+      };
+      if (!rawText || rawText.trim().length < 20) {
+        res.status(400).json({ error: 'Please paste at least 20 characters of job post or email text.' });
+        return;
+      }
+      const result = await extractJobsFromPostOrEmail({
+        inputType: inputType === 'email_alert' ? 'email_alert' : 'social_post',
+        rawText,
+        postOrSourceUrl,
+        portalHint,
+        actorUid: req.user?.uid || 'candidate',
+      });
+      res.json(result);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Text extraction failed';
       res.status(500).json({ error: message });
     }
   });

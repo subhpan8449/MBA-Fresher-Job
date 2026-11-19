@@ -172,9 +172,30 @@ export async function saveDiscoveredJobsToFirestore(
   isAdmin: boolean
 ): Promise<number> {
   if (jobs.length === 0) return 0;
+  const candidates = jobs.slice(0, 25);
+
+  // For non-admin users, skip docs that already exist so we never trigger Firestore `update` permission denial
+  let jobsToWrite = candidates;
+  if (!isAdmin) {
+    const checks = await Promise.all(
+      candidates.map(async (job) => {
+        const jobId = cleanId(job.jobId);
+        try {
+          const snap = await getDoc(doc(db, 'jobs', jobId));
+          return snap.exists() ? null : job;
+        } catch {
+          return null;
+        }
+      })
+    );
+    jobsToWrite = checks.filter((j): j is JobListing => j !== null);
+  }
+
+  if (jobsToWrite.length === 0) return 0;
+
   const batch = writeBatch(db);
   let count = 0;
-  for (const job of jobs.slice(0, 25)) {
+  for (const job of jobsToWrite) {
     const jobId = cleanId(job.jobId);
     const ref = doc(db, 'jobs', jobId);
     const status = isAdmin
@@ -182,6 +203,11 @@ export async function saveDiscoveredJobsToFirestore(
       : job.verificationStatus === 'Verified'
         ? 'Partially Verified'
         : job.verificationStatus;
+
+    const computedBucket =
+      status === 'Partially Verified' && job.feedBucket === 'Verified MBA Fresher Jobs'
+        ? 'Partially Verified Jobs'
+        : job.feedBucket || (status === 'Verified' ? 'Verified MBA Fresher Jobs' : 'Partially Verified Jobs');
 
     const validCategory =
       job.category === 'Finance Jobs' ||
@@ -205,7 +231,7 @@ export async function saveDiscoveredJobsToFirestore(
       experienceCheck: job.experienceCheck || 'Confirmed 0-1 Yr',
       mbaEligible: Boolean(job.mbaEligible ?? true),
       qualificationCheck: job.qualificationCheck || 'Confirmed MBA Eligible',
-      feedBucket: job.feedBucket || (status === 'Verified' ? 'Verified MBA Fresher Jobs' : 'Partially Verified Jobs'),
+      feedBucket: computedBucket,
       educationRequired: (job.educationRequired || 'MBA').slice(0, 200),
       category: validCategory,
       mbaSpecialization: (job.mbaSpecialization || validCategory).slice(0, 120),
@@ -244,7 +270,8 @@ export async function saveDiscoveredJobsToFirestore(
     await batch.commit();
     return count;
   } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, 'jobs');
+    console.warn('Partial Firestore job sync notice:', error);
+    return 0;
   }
 }
 

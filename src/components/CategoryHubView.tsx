@@ -18,11 +18,13 @@ import { useDebounce } from '../hooks/useDebounce';
 import { discoverJobsViaAi, fetchLivePublicJobs } from '../services/apiClient';
 import type { ApplicationProcessUpdates } from '../services/firestoreService';
 import {
+  DISCOVERY_PORTALS,
   INDIA_CITIES,
   type AiRecommendation,
   type ApplicationStatus,
   type CandidateNotification,
   type CandidateProfile,
+  type DiscoveryPortal,
   type FeedBucket,
   type JobApplication,
   type JobCategory,
@@ -139,7 +141,19 @@ export const CategoryHubView: React.FC<CategoryHubViewProps> = ({
 
   const [discoverRole, setDiscoverRole] = useState('');
   const [discoverCountry, setDiscoverCountry] = useState('India');
+  const [selectedPortals, setSelectedPortals] = useState<DiscoveryPortal[]>([...DISCOVERY_PORTALS]);
   const [discovering, setDiscovering] = useState(false);
+  const [localDiscovered, setLocalDiscovered] = useState<JobListing[]>([]);
+
+  const togglePortal = (portal: DiscoveryPortal) => {
+    setSelectedPortals((prev) =>
+      prev.includes(portal)
+        ? prev.length > 1
+          ? prev.filter((p) => p !== portal)
+          : prev
+        : [...prev, portal]
+    );
+  };
 
   const meta = CATEGORY_META[category];
 
@@ -212,7 +226,9 @@ export const CategoryHubView: React.FC<CategoryHubViewProps> = ({
     const map = new Map<string, JobListing>();
     for (const j of indiaResp?.jobs || []) map.set(j.duplicateKey || j.jobId, j);
     if (indiaPage === 1) {
-      for (const j of firestoreCatJobs.filter((f) => f.region === 'India')) {
+      for (const j of [...localDiscovered, ...firestoreCatJobs].filter(
+        (f) => f.region === 'India' && f.category === category
+      )) {
         if (selectedBucket !== 'All' && j.feedBucket !== selectedBucket) continue;
         if (selectedWorkMode !== 'All' && j.workMode !== selectedWorkMode) continue;
         if (debouncedSearch) {
@@ -225,13 +241,15 @@ export const CategoryHubView: React.FC<CategoryHubViewProps> = ({
     return Array.from(map.values()).sort(
       (a, b) => (recMap.get(b.jobId)?.matchScore || 0) - (recMap.get(a.jobId)?.matchScore || 0)
     );
-  }, [indiaResp, firestoreCatJobs, indiaPage, selectedBucket, selectedWorkMode, debouncedSearch, recMap]);
+  }, [indiaResp, localDiscovered, firestoreCatJobs, category, indiaPage, selectedBucket, selectedWorkMode, debouncedSearch, recMap]);
 
   const intlJobs = useMemo(() => {
     const map = new Map<string, JobListing>();
     for (const j of intlResp?.jobs || []) map.set(j.duplicateKey || j.jobId, j);
     if (intlPage === 1) {
-      for (const j of firestoreCatJobs.filter((f) => f.region === 'International')) {
+      for (const j of [...localDiscovered, ...firestoreCatJobs].filter(
+        (f) => f.region === 'International' && f.category === category
+      )) {
         if (selectedBucket !== 'All' && j.feedBucket !== selectedBucket) continue;
         if (selectedWorkMode !== 'All' && j.workMode !== selectedWorkMode) continue;
         if (debouncedSearch) {
@@ -244,7 +262,7 @@ export const CategoryHubView: React.FC<CategoryHubViewProps> = ({
     return Array.from(map.values()).sort(
       (a, b) => (recMap.get(b.jobId)?.matchScore || 0) - (recMap.get(a.jobId)?.matchScore || 0)
     );
-  }, [intlResp, firestoreCatJobs, intlPage, selectedBucket, selectedWorkMode, debouncedSearch, recMap]);
+  }, [intlResp, localDiscovered, firestoreCatJobs, category, intlPage, selectedBucket, selectedWorkMode, debouncedSearch, recMap]);
 
   const topAiMatches = useMemo(() => {
     return [...indiaJobs, ...intlJobs]
@@ -277,9 +295,21 @@ export const CategoryHubView: React.FC<CategoryHubViewProps> = ({
         country: discoverCountry,
         city: selectedCity,
         roleQuery: discoverRole || debouncedSearch || meta.defaultQuery,
+        portals: selectedPortals,
       });
+      if (res.jobs.length > 0) {
+        setLocalDiscovered((prev) => {
+          const map = new Map<string, JobListing>();
+          for (const j of [...res.jobs, ...prev]) map.set(j.duplicateKey || j.jobId, j);
+          return Array.from(map.values());
+        });
+      }
       const synced = await onSyncDiscoveredJobs(res.jobs);
-      onToast(`Discovered ${res.jobs.length} ${category} opportunities (${synced} synced to catalog).`);
+      onToast(
+        res.warning
+          ? `Found ${res.jobs.length} ${category} openings (${synced} new saved). ${res.warning}`
+          : `Discovered ${res.jobs.length} live ${category} opportunities across ${selectedPortals.length} apps (${synced} new saved).`
+      );
       void loadCategoryFeeds(false);
     } catch (err) {
       onToast(err instanceof Error ? err.message : 'Discovery failed');
@@ -323,7 +353,7 @@ export const CategoryHubView: React.FC<CategoryHubViewProps> = ({
             className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-medium text-slate-800 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 whitespace-nowrap shrink-0"
           >
             <ImageUp className="h-3.5 w-3.5" />
-            <span>OCR Screenshot</span>
+            <span>Ingest: Screenshot / Post / Mail</span>
           </button>
 
           <button
@@ -481,41 +511,101 @@ export const CategoryHubView: React.FC<CategoryHubViewProps> = ({
               ))}
             </div>
 
-            {/* Category AI Discovery Bar */}
-            <div className="flex flex-col gap-2 border-t border-slate-100 pt-3 sm:flex-row sm:items-center dark:border-slate-800">
-              <input
-                type="text"
-                value={discoverRole}
-                onChange={(e) => setDiscoverRole(e.target.value)}
-                placeholder={meta.focusPlaceholder}
-                className="flex-1 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-900 dark:border-slate-700 dark:bg-slate-950 dark:text-white"
-              />
-              <select
-                value={discoverCountry}
-                onChange={(e) => setDiscoverCountry(e.target.value)}
-                aria-label="Discovery country priority"
-                className="sm:w-44 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-900 dark:border-slate-700 dark:bg-slate-950 dark:text-white"
-              >
-                <option value="India">India (Priority 1)</option>
-                <option value="Global">International + India</option>
-                <option value="United Kingdom">United Kingdom</option>
-                <option value="United States">United States</option>
-                <option value="UAE">UAE / Dubai</option>
-                <option value="Singapore">Singapore</option>
-              </select>
-              <button
-                type="button"
-                disabled={discovering}
-                onClick={() => void handleCategoryDiscovery()}
-                className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-blue-700 px-4 py-2 text-xs font-medium text-white hover:bg-blue-800 disabled:opacity-50 whitespace-nowrap shrink-0"
-              >
-                {discovering ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <Sparkles className="h-3.5 w-3.5" />
-                )}
-                <span>{discovering ? 'Searching...' : `Discover ${category}`}</span>
-              </button>
+            {/* Category AI Multi-Portal Discovery Bar */}
+            <div className="space-y-2.5 border-t border-slate-100 pt-3 dark:border-slate-800">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="mr-1 text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                  Target Apps ({selectedPortals.length}/{DISCOVERY_PORTALS.length}):
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setSelectedPortals([...DISCOVERY_PORTALS])}
+                  className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                >
+                  All 16 Apps
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setSelectedPortals([
+                      'LinkedIn',
+                      'Naukri',
+                      'Internshala',
+                      'Foundit',
+                      'IIMJobs',
+                      'Unstop',
+                      'Shine',
+                      'Apna',
+                      'Freshersworld',
+                    ])
+                  }
+                  className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                >
+                  Top Indian Apps
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setSelectedPortals(['Wellfound', 'Cutshort', 'Instahyre', 'Hirist', 'Company ATS'])
+                  }
+                  className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                >
+                  Startups &amp; ATS
+                </button>
+                {DISCOVERY_PORTALS.map((portal) => {
+                  const active = selectedPortals.includes(portal);
+                  return (
+                    <button
+                      key={portal}
+                      type="button"
+                      onClick={() => togglePortal(portal)}
+                      className={`rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                        active
+                          ? 'bg-blue-700 text-white'
+                          : 'border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300'
+                      }`}
+                    >
+                      {portal}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                <input
+                  type="text"
+                  value={discoverRole}
+                  onChange={(e) => setDiscoverRole(e.target.value)}
+                  placeholder={meta.focusPlaceholder}
+                  className="flex-1 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-900 dark:border-slate-700 dark:bg-slate-950 dark:text-white"
+                />
+                <select
+                  value={discoverCountry}
+                  onChange={(e) => setDiscoverCountry(e.target.value)}
+                  aria-label="Discovery country priority"
+                  className="sm:w-44 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-900 dark:border-slate-700 dark:bg-slate-950 dark:text-white"
+                >
+                  <option value="India">India (Priority 1)</option>
+                  <option value="Global">International + India</option>
+                  <option value="United Kingdom">United Kingdom</option>
+                  <option value="United States">United States</option>
+                  <option value="UAE">UAE / Dubai</option>
+                  <option value="Singapore">Singapore</option>
+                </select>
+                <button
+                  type="button"
+                  disabled={discovering}
+                  onClick={() => void handleCategoryDiscovery()}
+                  className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-blue-700 px-4 py-2 text-xs font-medium text-white hover:bg-blue-800 disabled:opacity-50 whitespace-nowrap shrink-0"
+                >
+                  {discovering ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Sparkles className="h-3.5 w-3.5" />
+                  )}
+                  <span>{discovering ? 'Searching Portals...' : `Discover ${category}`}</span>
+                </button>
+              </div>
             </div>
           </section>
 

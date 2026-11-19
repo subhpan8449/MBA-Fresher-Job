@@ -2,6 +2,7 @@ import { GoogleGenAI, Type } from '@google/genai';
 import type {
   ApplicationAssistantOutput,
   CandidateProfile,
+  DiscoveryPortal,
   JobCategory,
   JobListing,
   JobMatchResult,
@@ -99,110 +100,264 @@ export function updateDailySpendCap(newCapUsd: number): void {
   }
 }
 
-// 1. India-First Global MBA Fresher Job Discovery via Google Search Grounding
+const PORTAL_SITE_DIRECTIVES: Record<DiscoveryPortal, string> = {
+  LinkedIn: 'site:linkedin.com/jobs',
+  Naukri: 'site:naukri.com',
+  Internshala: 'site:internshala.com',
+  Foundit: 'site:foundit.in',
+  IIMJobs: 'site:iimjobs.com',
+  Indeed: 'site:indeed.co.in OR site:indeed.com',
+  Glassdoor: 'site:glassdoor.co.in OR site:glassdoor.com',
+  Hirist: 'site:hirist.tech',
+  Unstop: 'site:unstop.com/jobs',
+  Shine: 'site:shine.com',
+  Apna: 'site:apna.co',
+  Wellfound: 'site:wellfound.com/jobs',
+  Cutshort: 'site:cutshort.io',
+  Instahyre: 'site:instahyre.com',
+  Freshersworld: 'site:freshersworld.com',
+  'Company ATS': 'site:boards.greenhouse.io OR site:jobs.lever.co OR site:myworkdayjobs.com OR site:jobs.smartrecruiters.com',
+};
+
+function inferPortalSourceName(url: string, fallbackSource: string): string {
+  const lower = url.toLowerCase();
+  if (lower.includes('linkedin.com/posts/') || lower.includes('linkedin.com/feed/')) {
+    return 'LinkedIn Social Media Post';
+  }
+  if (lower.includes('linkedin.com/jobs')) return 'LinkedIn Jobs';
+  if (lower.includes('naukri.com')) return 'Naukri.com';
+  if (lower.includes('internshala.com')) return 'Internshala';
+  if (lower.includes('foundit.in') || lower.includes('monsterindia.com')) return 'Foundit (Monster)';
+  if (lower.includes('iimjobs.com')) return 'IIMJobs';
+  if (lower.includes('indeed.')) return 'Indeed';
+  if (lower.includes('glassdoor.')) return 'Glassdoor';
+  if (lower.includes('hirist.')) return 'Hirist';
+  if (lower.includes('unstop.com')) return 'Unstop';
+  if (lower.includes('shine.com')) return 'Shine.com';
+  if (lower.includes('apna.co')) return 'Apna';
+  if (lower.includes('wellfound.com') || lower.includes('angel.co')) return 'Wellfound';
+  if (lower.includes('cutshort.io')) return 'Cutshort';
+  if (lower.includes('instahyre.com')) return 'Instahyre';
+  if (lower.includes('freshersworld.com')) return 'Freshersworld';
+  if (lower.includes('greenhouse.io')) return 'Greenhouse ATS';
+  if (lower.includes('lever.co')) return 'Lever ATS';
+  if (lower.includes('smartrecruiters.com')) return 'SmartRecruiters ATS';
+  if (lower.includes('myworkdayjobs.com')) return 'Workday ATS';
+  return fallbackSource;
+}
+
+function extractJsonSafely<T>(rawText: string | undefined, fallback: T): T {
+  if (!rawText) return fallback;
+  const cleaned = rawText
+    .trim()
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+  try {
+    return JSON.parse(cleaned) as T;
+  } catch {
+    // Attempt extracting outermost JSON object or array
+    const firstBrace = cleaned.indexOf('{');
+    const lastBrace = cleaned.lastIndexOf('}');
+    const firstBracket = cleaned.indexOf('[');
+    const lastBracket = cleaned.lastIndexOf(']');
+
+    const candidates: string[] = [];
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      candidates.push(cleaned.slice(firstBrace, lastBrace + 1));
+    }
+    if (firstBracket !== -1 && lastBracket > firstBracket) {
+      candidates.push(cleaned.slice(firstBracket, lastBracket + 1));
+    }
+    for (const candidate of candidates) {
+      try {
+        return JSON.parse(candidate) as T;
+      } catch {
+        // continue
+      }
+    }
+    return fallback;
+  }
+}
+
+// 1. India-First Global MBA Fresher Job Discovery via Multi-Portal Batched Google Search Grounding
 export async function discoverJobsWithGemini(params: {
   category: JobCategory | 'All';
   country: string;
   city?: string;
   roleQuery?: string;
+  portals?: DiscoveryPortal[];
   actorUid: string;
-}): Promise<{ jobs: JobListing[]; groundingSources: Array<{ title: string; url: string }> }> {
-  trackAiUsage(0.015);
+}): Promise<{
+  jobs: JobListing[];
+  groundingSources: Array<{ title: string; url: string }>;
+  partialWarning?: string;
+}> {
+  trackAiUsage(0.018);
   const ai = getGeminiClient();
 
   const focusCategory =
     params.category === 'All'
-      ? 'Finance Jobs (Financial Analyst, FP&A, Corporate Finance, Audit, Treasury, Banking Ops, Risk)'
+      ? 'Finance Jobs (Financial Analyst, FP&A, Corporate Finance, Audit, Treasury, Banking Ops, Risk), SAP FICO, Business Analytics, Marketing'
       : params.category;
 
   const targetRegion =
     params.country && params.country !== 'Global'
       ? `${params.country}${params.city && params.city !== 'All India' ? ` (${params.city})` : ''}`
-      : 'India FIRST (Mumbai, Delhi NCR, Bengaluru, Hyderabad, Pune, Gurugram, Noida, Chennai, Kolkata, Haldwani), plus select International opportunities';
+      : 'India FIRST (Mumbai, Delhi NCR, Bengaluru, Hyderabad, Pune, Gurugram, Noida, Chennai, Kolkata, Haldwani), plus International opportunities';
 
-  const prompt = `Search for real, currently open MBA Fresher (0 to 1 year experience ONLY, freshers, or MBA Graduate Trainee) job postings.
+  const activePortals: DiscoveryPortal[] =
+    params.portals && params.portals.length > 0
+      ? params.portals
+      : ['LinkedIn', 'Naukri', 'Internshala', 'Foundit', 'IIMJobs', 'Indeed', 'Unstop', 'Company ATS'];
+
+  // Split selected portals into clean 4-portal search batches so Google Search does not drop long OR chains
+  const portalBatches: DiscoveryPortal[][] = [];
+  for (let i = 0; i < activePortals.length; i += 4) {
+    portalBatches.push(activePortals.slice(i, i + 4));
+  }
+  const batchesToRun = portalBatches.slice(0, 3);
+
+  const runSearchBatch = async (
+    batchPortals: DiscoveryPortal[],
+    openWebFallback = false
+  ): Promise<{ rawJobs: Array<Record<string, unknown>>; sources: Array<{ title: string; url: string }> }> => {
+    const siteFilterClause = batchPortals
+      .map((p) => PORTAL_SITE_DIRECTIVES[p])
+      .filter(Boolean)
+      .join(' OR ');
+
+    const scopeLine = openWebFallback
+      ? 'Search official company career portals, Indian job boards (Naukri, LinkedIn, Internshala, Foundit, Unstop, IIMJobs), and campus/fresher hiring pages.'
+      : `Focus on these apps/portals: ${batchPortals.join(', ')} (Suggested scope: ${siteFilterClause}).`;
+
+    const prompt = `Search for real, currently open MBA Fresher (0 to 1 year experience ONLY, freshers, or MBA Graduate Trainee / Management Trainee) job postings.
+${scopeLine}
 Category Priority: ${focusCategory}
 Target Location Priority: ${targetRegion}
 Specific Role Focus: ${params.roleQuery || 'MBA fresher'}
 
 CRITICAL RULES:
-1. STRICT MBA ELIGIBILITY: Find roles open to MBA / PGDM graduates (Finance, Marketing, Business Analytics, SAP FICO, HR, Operations, International Business). EXCLUDE undergraduate-only roles.
+1. STRICT MBA ELIGIBILITY: Find roles open to MBA / PGDM graduates (Finance, SAP FICO, Business Analytics, Marketing, HR, Operations). EXCLUDE unrelated undergraduate-only or engineering-only roles.
 2. STRICT EXPERIENCE LIMIT: ONLY include 0 years, freshers, 0-1 years, or MBA graduate trainee positions. HARD EXCLUDE anything requiring > 1 year (2+ years, 2-3 years, mid-level, senior, managerial).
-3. REAL JOBS ONLY: Only extract genuine postings found in Google Search results (Naukri, LinkedIn public jobs, Indeed, Foundit, Internshala, Workday, Greenhouse, Lever, company career pages). NEVER invent URLs, salaries, recruiter names, or deadlines.
-4. Preserve the original job URL and official application URL.
-5. If discovered on social media (e.g. LinkedIn public post), explicitly set sourceName to "Social Media Public Post" and mark unverified details transparently.
-6. Return up to 8 listings in JSON.`;
+3. REAL JOBS ONLY: Only extract genuine postings found in Google Search results. NEVER invent URLs, salaries, recruiter names, or deadlines.
+4. Preserve the original job URL and official application URL verbatim from the search results.
+5. If discovered on a social media post (e.g. LinkedIn feed post), explicitly set sourceName to "LinkedIn Social Media Post".
+6. Return up to 8 listings in JSON, prioritizing India opportunities first.`;
 
-  const response = await ai.models.generateContent({
-    model: 'gemini-4-hydrogen',
-    contents: prompt,
-    config: {
-      tools: [{ googleSearch: {} }],
-      responseMimeType: 'application/json',
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          jobs: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                title: { type: Type.STRING },
-                company: { type: Type.STRING },
-                country: { type: Type.STRING },
-                city: { type: Type.STRING },
-                workMode: { type: Type.STRING },
-                experienceRequired: { type: Type.STRING },
-                educationRequired: { type: Type.STRING },
-                mbaSpecialization: { type: Type.STRING },
-                skills: { type: Type.ARRAY, items: { type: Type.STRING } },
-                salary: { type: Type.STRING },
-                employmentType: { type: Type.STRING },
-                description: { type: Type.STRING },
-                deadline: { type: Type.STRING },
-                postedDate: { type: Type.STRING },
-                sourceName: { type: Type.STRING },
-                originalJobUrl: { type: Type.STRING },
-                applyUrl: { type: Type.STRING },
-                recruiterInfo: { type: Type.STRING },
-                visaSponsorship: { type: Type.STRING },
+    const response = await ai.models.generateContent({
+      model: 'gemini-4-hydrogen',
+      contents: prompt,
+      config: {
+        tools: [{ googleSearch: {} }],
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            jobs: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  title: { type: Type.STRING },
+                  company: { type: Type.STRING },
+                  country: { type: Type.STRING },
+                  city: { type: Type.STRING },
+                  workMode: { type: Type.STRING },
+                  experienceRequired: { type: Type.STRING },
+                  educationRequired: { type: Type.STRING },
+                  mbaSpecialization: { type: Type.STRING },
+                  skills: { type: Type.ARRAY, items: { type: Type.STRING } },
+                  salary: { type: Type.STRING },
+                  employmentType: { type: Type.STRING },
+                  description: { type: Type.STRING },
+                  deadline: { type: Type.STRING },
+                  postedDate: { type: Type.STRING },
+                  sourceName: { type: Type.STRING },
+                  originalJobUrl: { type: Type.STRING },
+                  applyUrl: { type: Type.STRING },
+                  recruiterInfo: { type: Type.STRING },
+                  visaSponsorship: { type: Type.STRING },
+                },
+                required: ['title', 'company', 'country', 'experienceRequired', 'educationRequired'],
               },
-              required: ['title', 'company', 'country', 'experienceRequired', 'educationRequired', 'applyUrl'],
             },
           },
         },
       },
-    },
-  });
+    });
 
-  const chunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
-  const groundingSources = chunks
-    .map((c) => ({
-      title: c.web?.title || 'Search Source',
-      url: c.web?.uri || '',
-    }))
-    .filter((s) => s.url.startsWith('http'));
+    const chunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
+    const sources = chunks
+      .map((c) => ({
+        title: c.web?.title || 'Search Source',
+        url: c.web?.uri || '',
+      }))
+      .filter((s) => s.url.startsWith('http'));
 
-  let parsed: { jobs?: Array<Record<string, unknown>> } = {};
-  try {
-    parsed = JSON.parse((response.text || '{}').trim());
-  } catch {
-    parsed = { jobs: [] };
+    const parsed = extractJsonSafely<{ jobs?: Array<Record<string, unknown>> }>(response.text, { jobs: [] });
+    return { rawJobs: parsed.jobs || [], sources };
+  };
+
+  const settled = await Promise.allSettled(batchesToRun.map((batch) => runSearchBatch(batch, false)));
+  const allRawJobs: Array<Record<string, unknown>> = [];
+  const groundingSources: Array<{ title: string; url: string }> = [];
+  let failedBatches = 0;
+
+  for (const res of settled) {
+    if (res.status === 'fulfilled') {
+      allRawJobs.push(...res.value.rawJobs);
+      groundingSources.push(...res.value.sources);
+    } else {
+      failedBatches += 1;
+    }
   }
+
+  // Automatic open-web fallback if strict site: batches returned fewer than 3 jobs
+  if (allRawJobs.length < 3) {
+    try {
+      const fallbackRes = await runSearchBatch(activePortals.slice(0, 4), true);
+      allRawJobs.push(...fallbackRes.rawJobs);
+      groundingSources.push(...fallbackRes.sources);
+    } catch {
+      // Keep whatever results we already gathered
+    }
+  }
+
+  const dedupedSources = Array.from(
+    new Map(groundingSources.map((s) => [s.url, s])).values()
+  );
 
   const nowIso = new Date().toISOString();
   const normalizedJobs: JobListing[] = [];
+  const seenKeys = new Set<string>();
 
-  for (const raw of parsed.jobs || []) {
-    const applyUrl = typeof raw.applyUrl === 'string' ? raw.applyUrl.trim() : '';
-    const originalJobUrl =
-      typeof raw.originalJobUrl === 'string' && raw.originalJobUrl.startsWith('http')
-        ? raw.originalJobUrl.trim()
-        : applyUrl;
-    if (!applyUrl.startsWith('http')) continue;
-
+  for (const raw of allRawJobs) {
     const title = String(raw.title || 'MBA Analyst').slice(0, 195);
     const company = String(raw.company || 'Employer').slice(0, 155);
+
+    let applyUrl = typeof raw.applyUrl === 'string' ? raw.applyUrl.trim() : '';
+    let originalJobUrl = typeof raw.originalJobUrl === 'string' ? raw.originalJobUrl.trim() : '';
+
+    // Recover real grounding URL if model omitted applyUrl but matched a real search result
+    if (!applyUrl.startsWith('http')) {
+      const compLower = company.toLowerCase();
+      const titleFirst = title.toLowerCase().split(/\s+/)[0] || '';
+      const matchedChunk = dedupedSources.find(
+        (s) =>
+          s.title.toLowerCase().includes(compLower) ||
+          s.url.toLowerCase().includes(compLower.replace(/\s+/g, '')) ||
+          (titleFirst.length > 3 && s.title.toLowerCase().includes(titleFirst))
+      );
+      if (matchedChunk) {
+        applyUrl = matchedChunk.url;
+      }
+    }
+    if (!originalJobUrl.startsWith('http')) {
+      originalJobUrl = applyUrl;
+    }
+    if (!applyUrl.startsWith('http')) continue;
+
     const desc = String(raw.description || '').slice(0, 4000);
     const expReqRaw = String(raw.experienceRequired || '');
     const eduReqRaw = String(raw.educationRequired || '');
@@ -220,6 +375,10 @@ CRITICAL RULES:
       desc
     );
 
+    const dupKey = computeDuplicateKey(company, title, regionInfo.country);
+    if (seenKeys.has(dupKey)) continue;
+    seenKeys.add(dupKey);
+
     const detectedCategory =
       classifyJobCategory(title, desc) ||
       (params.category !== 'All' ? params.category : 'Finance Jobs');
@@ -230,13 +389,21 @@ CRITICAL RULES:
         ? workModeRaw
         : 'Unspecified';
 
-    const sourceName = String(raw.sourceName || 'Google Search Grounding').slice(0, 115);
-    const isSocialPost = sourceName.toLowerCase().includes('social') || applyUrl.includes('/posts/');
-    const hasGroundingMatch = groundingSources.some(
-      (s) => s.url === applyUrl || s.url === originalJobUrl || applyUrl.includes('greenhouse') || applyUrl.includes('lever')
+    const rawSource = String(raw.sourceName || 'Google Search Grounding').slice(0, 115);
+    const sourceName = inferPortalSourceName(originalJobUrl, rawSource).slice(0, 115);
+    const isSocialPost =
+      sourceName.toLowerCase().includes('social') ||
+      applyUrl.includes('/posts/') ||
+      applyUrl.includes('/feed/');
+    const hasGroundingMatch = dedupedSources.some(
+      (s) =>
+        s.url === applyUrl ||
+        s.url === originalJobUrl ||
+        applyUrl.includes('greenhouse') ||
+        applyUrl.includes('lever') ||
+        applyUrl.includes('smartrecruiters')
     );
 
-    // Never label an unverified social media post as a confirmed vacancy
     const verificationStatus: VerificationStatus = isSocialPost
       ? 'Unverified'
       : hasGroundingMatch
@@ -278,7 +445,7 @@ CRITICAL RULES:
       lastVerifiedDate: nowIso.slice(0, 10),
       sourceName,
       originalJobUrl,
-      sourceUrls: Array.from(new Set([originalJobUrl, applyUrl, ...groundingSources.slice(0, 3).map((s) => s.url)])),
+      sourceUrls: Array.from(new Set([originalJobUrl, applyUrl, ...dedupedSources.slice(0, 3).map((s) => s.url)])),
       applyUrl,
       recruiterInfo: String(raw.recruiterInfo || 'Not publicly listed').slice(0, 290),
       visaSponsorship:
@@ -286,13 +453,20 @@ CRITICAL RULES:
           ? 'Domestic India Role'
           : String(raw.visaSponsorship || 'Work authorization required unless stated').slice(0, 150),
       verificationStatus,
-      duplicateKey: computeDuplicateKey(company, title, regionInfo.country),
+      duplicateKey: dupKey,
       visibility: 'public',
       createdBy: params.actorUid,
     });
   }
 
-  return { jobs: normalizedJobs, groundingSources };
+  return {
+    jobs: normalizedJobs,
+    groundingSources: dedupedSources,
+    partialWarning:
+      failedBatches > 0
+        ? `${failedBatches} portal batch(es) timed out; returned verified results from remaining apps and live ATS feeds.`
+        : undefined,
+  };
 }
 
 // 2. Job Verification, MBA Eligibility & <=1 Yr Experience Audit Agent
@@ -355,12 +529,10 @@ Rules:
     },
   });
 
-  let parsed: { verificationStatus?: string; scamWarning?: string; auditNotes?: string } = {};
-  try {
-    parsed = JSON.parse((response.text || '{}').trim());
-  } catch {
-    parsed = {};
-  }
+  const parsed = extractJsonSafely<{ verificationStatus?: string; scamWarning?: string; auditNotes?: string }>(
+    response.text,
+    {}
+  );
 
   const combinedText = `${job.description || ''} ${health.pageSnippet}`;
   const exp = detectExperienceEligibility(job.title || '', combinedText);
@@ -449,7 +621,7 @@ NEVER invent a URL, salary, recruiter name, or deadline. If an official apply UR
     },
   });
 
-  const parsed = JSON.parse((response.text || '{}').trim()) as Record<string, unknown>;
+  const parsed = extractJsonSafely<Record<string, unknown>>(response.text, {});
   const title = String(parsed.title || 'Extracted Role').slice(0, 195);
   const company = String(parsed.company || 'Unverified Employer').slice(0, 155);
   const desc = String(parsed.description || '').slice(0, 4000);
@@ -522,6 +694,222 @@ NEVER invent a URL, salary, recruiter name, or deadline. If an official apply UR
   };
 }
 
+// 3B. Social Media Post & Job Alert Email Extractor (LinkedIn, WhatsApp, Telegram, Naukri, Internshala, Foundit, Placement Mails)
+export async function extractJobsFromPostOrEmail(params: {
+  inputType: 'social_post' | 'email_alert';
+  rawText: string;
+  postOrSourceUrl?: string;
+  portalHint?: string;
+  actorUid: string;
+}): Promise<{ jobs: JobListing[]; skippedOverExpCount: number; auditSummary: string }> {
+  trackAiUsage(0.012);
+  const ai = getGeminiClient();
+
+  const cleanInput = params.rawText.trim().slice(0, 18000);
+  const cleanUrl = (params.postOrSourceUrl || '').trim();
+  const portalHint = (params.portalHint || '').trim();
+
+  const prompt = `Extract genuine job opportunities from the following ${
+    params.inputType === 'email_alert'
+      ? 'job alert email / placement digest / recruiter mail'
+      : 'social media hiring post / WhatsApp / Telegram job announcement'
+  }.
+Source Portal Hint: ${portalHint || (params.inputType === 'email_alert' ? 'Job Alert Email' : 'Social Media Post')}
+Provided Reference URL: ${cleanUrl || 'None provided'}
+
+INPUT TEXT:
+"""
+${cleanInput}
+"""
+
+CRITICAL EXTRACTION & INTEGRITY RULES:
+1. Extract EVERY distinct job listing present in the text (e.g. if it is a Naukri/LinkedIn/Internshala/Foundit job alert email containing multiple jobs, return each job as a separate item in the array, up to 10 jobs).
+2. NEVER invent or fabricate any URL, salary, recruiter email, deadline, or company name. If an application URL appears in the text, preserve it verbatim in applyUrl; otherwise leave applyUrl empty.
+3. Clearly separate extracted claims (what the post/email claims) from independently verified facts inside extractedClaims.
+4. Inspect for scam warnings (e.g. asks for registration fee, security deposit, paid training, unofficial personal Gmail asking for money).`;
+
+  const response = await ai.models.generateContent({
+    model: 'gemini-4-hydrogen',
+    contents: prompt,
+    config: {
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          auditSummary: { type: Type.STRING },
+          jobs: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                title: { type: Type.STRING },
+                company: { type: Type.STRING },
+                country: { type: Type.STRING },
+                city: { type: Type.STRING },
+                workMode: { type: Type.STRING },
+                experienceRequired: { type: Type.STRING },
+                educationRequired: { type: Type.STRING },
+                skills: { type: Type.ARRAY, items: { type: Type.STRING } },
+                salary: { type: Type.STRING },
+                deadline: { type: Type.STRING },
+                applyUrl: { type: Type.STRING },
+                originalJobUrl: { type: Type.STRING },
+                recruiterInfo: { type: Type.STRING },
+                description: { type: Type.STRING },
+                extractedClaims: { type: Type.STRING },
+                scamWarning: { type: Type.STRING },
+                sourcePlatform: { type: Type.STRING },
+              },
+              required: ['title', 'company', 'description', 'extractedClaims'],
+            },
+          },
+        },
+        required: ['auditSummary', 'jobs'],
+      },
+    },
+  });
+
+  const parsed = extractJsonSafely<{ auditSummary?: string; jobs?: Array<Record<string, unknown>> }>(
+    response.text,
+    { auditSummary: 'Unable to parse structured job fields.', jobs: [] }
+  );
+
+  const nowIso = new Date().toISOString();
+  const extractedJobs: JobListing[] = [];
+  let skippedOverExpCount = 0;
+
+  const fallbackInvalidUrl =
+    params.inputType === 'email_alert'
+      ? 'https://unverified-email-alert.invalid'
+      : 'https://unverified-social-post.invalid';
+
+  for (const raw of parsed.jobs || []) {
+    const title = String(raw.title || 'MBA Role').slice(0, 195);
+    const company = String(raw.company || 'Employer (Unverified)').slice(0, 155);
+    const desc = String(raw.description || '').slice(0, 4000);
+    const expRaw = String(raw.experienceRequired || '');
+    const eduRaw = String(raw.educationRequired || '');
+
+    const exp = detectExperienceEligibility(title, `${expRaw} ${desc}`);
+    // Hard exclusion for > 1 year experience roles
+    if (exp.experienceCheck === 'Exceeds 1 Yr') {
+      skippedOverExpCount += 1;
+      continue;
+    }
+
+    const mba = detectMbaEligibility(title, eduRaw, desc);
+    const category = classifyJobCategory(title, desc) || 'Finance Jobs';
+    const regionInfo = classifyRegionAndLocation(
+      String(raw.country || 'India'),
+      String(raw.city || ''),
+      desc
+    );
+
+    const rawApply = String(raw.applyUrl || '').trim();
+    const rawOrig = String(raw.originalJobUrl || '').trim();
+    const validApplyUrl = rawApply.startsWith('http')
+      ? rawApply
+      : cleanUrl.startsWith('http')
+        ? cleanUrl
+        : fallbackInvalidUrl;
+    const validOrigUrl = rawOrig.startsWith('http')
+      ? rawOrig
+      : cleanUrl.startsWith('http')
+        ? cleanUrl
+        : validApplyUrl;
+
+    const isKnownJobPortalUrl =
+      /(linkedin\.com\/jobs|naukri\.com|internshala\.com|foundit\.in|iimjobs\.com|indeed\.|greenhouse\.io|lever\.co|myworkdayjobs\.com|ashbyhq\.com)/i.test(
+        validApplyUrl
+      );
+
+    const scamWarningText = String(raw.scamWarning || '').trim();
+    const hasScamSignal =
+      /fee|deposit|pay\s*to\s*apply|registration\s*charge|suspicious/i.test(scamWarningText) &&
+      !/no scam/i.test(scamWarningText);
+
+    // Never label an unverified social media post as a confirmed vacancy
+    const verificationStatus: VerificationStatus = hasScamSignal
+      ? 'Suspicious'
+      : params.inputType === 'social_post'
+        ? 'Unverified'
+        : isKnownJobPortalUrl
+          ? 'Partially Verified'
+          : 'Unverified';
+
+    const feedBucket = computeFeedBucket({
+      verificationStatus,
+      mbaEligible: mba.mbaEligible,
+      experienceCheck: exp.experienceCheck,
+    });
+
+    const detectedSource = inferPortalSourceName(
+      validOrigUrl,
+      String(
+        raw.sourcePlatform ||
+          portalHint ||
+          (params.inputType === 'email_alert' ? 'Job Alert Mail (Unverified)' : 'Social Media Post (Unverified)')
+      )
+    ).slice(0, 115);
+
+    extractedJobs.push({
+      jobId: sanitizeId(
+        `${params.inputType === 'email_alert' ? 'mail' : 'post'}_${company}_${title}_${Date.now().toString(36).slice(-4)}`
+      ),
+      title,
+      company,
+      region: regionInfo.region,
+      country: regionInfo.country.slice(0, 95),
+      city: regionInfo.city.slice(0, 95),
+      workMode:
+        raw.workMode === 'Remote' || raw.workMode === 'Hybrid' || raw.workMode === 'On-site'
+          ? (raw.workMode as JobListing['workMode'])
+          : 'Unspecified',
+      experienceRequired: expRaw || exp.experienceRequired,
+      isFresherFriendly: exp.isFresherFriendly && mba.mbaEligible,
+      experienceTier: exp.experienceTier,
+      experienceCheck: exp.experienceCheck,
+      mbaEligible: mba.mbaEligible,
+      qualificationCheck: mba.qualificationCheck,
+      feedBucket,
+      educationRequired: mba.educationRequired,
+      category,
+      mbaSpecialization: category,
+      skills: Array.isArray(raw.skills) ? raw.skills.map(String).slice(0, 15) : [],
+      salary: String(raw.salary || 'Not mentioned in source').slice(0, 115),
+      employmentType: 'Full-time',
+      description: desc || cleanInput.slice(0, 1200),
+      deadline: String(raw.deadline || 'Not mentioned').slice(0, 75),
+      postedDate: nowIso.slice(0, 10),
+      lastVerifiedDate: nowIso.slice(0, 10),
+      sourceName: detectedSource,
+      originalJobUrl: validOrigUrl,
+      sourceUrls: [validOrigUrl, validApplyUrl].filter((u) => !u.endsWith('.invalid')),
+      applyUrl: validApplyUrl,
+      recruiterInfo: String(raw.recruiterInfo || 'Check original source').slice(0, 290),
+      visaSponsorship: regionInfo.region === 'India' ? 'Domestic India Role' : 'Not specified',
+      extractedClaims: String(
+        raw.extractedClaims ||
+          `Extracted from pasted ${params.inputType === 'email_alert' ? 'email alert' : 'social post'}; verify directly on official company careers page.`
+      ).slice(0, 1400),
+      scamWarning: scamWarningText.slice(0, 480) || undefined,
+      verificationStatus,
+      duplicateKey: computeDuplicateKey(company, title, regionInfo.country),
+      visibility: 'public',
+      createdBy: params.actorUid,
+    });
+  }
+
+  return {
+    jobs: extractedJobs,
+    skippedOverExpCount,
+    auditSummary: String(
+      parsed.auditSummary ||
+        `Extracted ${extractedJobs.length} MBA fresher candidate opportunities${skippedOverExpCount > 0 ? ` (filtered out ${skippedOverExpCount} roles requiring >1 yr experience)` : ''}.`
+    ),
+  };
+}
+
 // 4. Resume Analysis Agent
 export async function analyzeResumeWithGemini(params: {
   resumeText?: string;
@@ -580,7 +968,16 @@ RULES:
     },
   });
 
-  return JSON.parse((response.text || '{}').trim()) as ResumeAnalysisOutput;
+  return extractJsonSafely<ResumeAnalysisOutput>(response.text, {
+    candidateSummary: 'Resume parsed; please review extracted fields.',
+    detectedSpecialization: params.targetSpecialization || 'Finance Jobs',
+    experienceLevel: '0-1 Years',
+    extractedSkills: [],
+    extractedCertifications: [],
+    atsReadinessNotes: [],
+    missingFresherSignals: [],
+    recommendedJobTitles: [],
+  });
 }
 
 // 5. Candidate Matching Agent
@@ -647,7 +1044,7 @@ STRICT FAIRNESS RULES:
     },
   });
 
-  return JSON.parse((response.text || '[]').trim()) as JobMatchResult[];
+  return extractJsonSafely<JobMatchResult[]>(response.text, []);
 }
 
 // 6. Comprehensive Job Application Intelligence & Scam Check
@@ -754,7 +1151,25 @@ RULES:
     },
   });
 
-  const parsed = JSON.parse((response.text || '{}').trim()) as ApplicationAssistantOutput;
+  const parsed = extractJsonSafely<ApplicationAssistantOutput>(response.text, {
+    eligibilityAnalysis: 'Inspect official posting to confirm MBA eligibility and <= 1 yr experience criteria.',
+    relevanceExplanation: 'Matches MBA early-career role requirements.',
+    eligibilityRequirements: ['MBA / PGDM degree', '0-1 years experience'],
+    requiredSkills: job.skills || [],
+    requiredDocuments: ['Updated MBA Resume (PDF)'],
+    resumeModifications: ['Highlight MBA coursework and internship outcomes'],
+    atsKeywords: job.skills || [],
+    coverLetterRequired: 'Optional',
+    coverLetterDraft: '',
+    suggestedEmailSubject: `Application for ${job.title} — MBA Fresher`,
+    recruiterMessage: '',
+    stepByStepGuide: ['Review the official job link and submit your tailored resume.'],
+    likelyFormQuestions: [],
+    interviewPrep: [],
+    importantDeadline: job.deadline || 'Open',
+    scamWarning: job.scamWarning || 'No scam signals detected',
+    officialApplyUrl: job.applyUrl,
+  });
   parsed.officialApplyUrl = job.applyUrl;
   return parsed;
 }

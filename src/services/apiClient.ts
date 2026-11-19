@@ -2,6 +2,7 @@ import { auth } from '../firebase';
 import type {
   ApplicationAssistantOutput,
   CandidateProfile,
+  DiscoveryPortal,
   FeedBucket,
   JobCategory,
   JobListing,
@@ -92,14 +93,31 @@ export async function fetchLivePublicJobs(
   return handleApiResponse<PaginatedJobsResponse>(resp);
 }
 
+export interface JobsSummaryResponse {
+  total: number;
+  countsByBucket: Record<FeedBucket, number>;
+  countsByRegion: Record<JobRegion, number>;
+  countsByCategory: Record<JobCategory, number>;
+  connectedSourcesCount: number;
+  sourceBreakdown: Record<string, number>;
+  cachedAt: string;
+}
+
+export async function fetchJobsSummary(): Promise<JobsSummaryResponse> {
+  const resp = await fetchWithRetry('/api/jobs/summary');
+  return handleApiResponse<JobsSummaryResponse>(resp);
+}
+
 export async function discoverJobsViaAi(params: {
   category: JobCategory | 'All';
   country: string;
   city?: string;
   roleQuery?: string;
+  portals?: DiscoveryPortal[];
 }): Promise<{
   jobs: JobListing[];
   groundingSources: Array<{ title: string; url: string }>;
+  warning?: string;
 }> {
   const headers = await getAuthHeaders();
   const resp = await fetchWithRetry('/api/ai/discover-jobs', {
@@ -138,6 +156,21 @@ export async function extractJobFromScreenshotViaAi(params: {
 }): Promise<{ job: JobListing; unverifiedNotes: string }> {
   const headers = await getAuthHeaders();
   const resp = await fetchWithRetry('/api/ai/ocr-job', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(params),
+  });
+  return handleApiResponse(resp);
+}
+
+export async function extractJobsFromPostOrEmailViaAi(params: {
+  inputType: 'social_post' | 'email_alert';
+  rawText: string;
+  postOrSourceUrl?: string;
+  portalHint?: string;
+}): Promise<{ jobs: JobListing[]; skippedOverExpCount: number; auditSummary: string }> {
+  const headers = await getAuthHeaders();
+  const resp = await fetchWithRetry('/api/ai/ingest-text', {
     method: 'POST',
     headers,
     body: JSON.stringify(params),
